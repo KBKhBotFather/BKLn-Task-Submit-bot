@@ -53,7 +53,6 @@ def init_db():
 
 init_db()
 
-# --- States ---
 user_states = {}
 admin_states = {}
 
@@ -67,7 +66,6 @@ def get_member_info(tg_id):
         return user
     except Exception: return None
 
-# 📱 Keyboards
 def member_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(KeyboardButton("Task"), KeyboardButton("Pending Content"))
@@ -87,7 +85,6 @@ def get_instruction_keyboard(selected=None):
     markup.row(InlineKeyboardButton("Submit", callback_data="inst_submit"), InlineKeyboardButton("Cancel", callback_data="adm_cancel"))
     return markup
 
-# 📌 Core Commands
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     tg_id = message.from_user.id
@@ -100,7 +97,6 @@ def send_welcome(message):
         return
     bot.send_message(message.chat.id, "Welcome to KBKh Bot Ecosystem!\nYou can submit tasks directly here...", reply_markup=member_main_menu())
 
-# 📌 USER: Submit Photo & Special Task Logic
 @bot.message_handler(content_types=['photo'])
 def handle_photo_submission(message):
     tg_id = message.from_user.id
@@ -196,8 +192,6 @@ def handle_submission_selection(call):
         bot.send_message(call.message.chat.id, msg)
         user_states.pop(tg_id, None)
 
-
-# 📌 ADMIN: Pending Content
 @bot.message_handler(func=lambda msg: msg.text == "Pending Content")
 def handle_pending_content(message):
     tg_id = message.from_user.id
@@ -221,7 +215,6 @@ def handle_pending_content(message):
         for sub in subs: bot.send_photo(message.chat.id, sub['photo_id'], caption=f"Instruction: {sub['assigned_instruction'] if sub['assigned_instruction'] else 'Pending⏳'}")
     conn.close()
 
-# 📌 ADMIN: Task Assign System
 @bot.message_handler(func=lambda msg: msg.text == "Task Assign")
 def task_assign_menu(message):
     if str(message.from_user.id) != ADMIN_CHAT_ID: return
@@ -312,7 +305,6 @@ def admin_callbacks(call):
         markup.add(InlineKeyboardButton("Edit Task", callback_data="ta_edit"), InlineKeyboardButton("Cancel", callback_data="adm_cancel"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # Pending Review Logic (From Phase 3)
     elif data.startswith("adm_rev_"):
         target_tg_id = int(data.split("_")[2])
         conn = get_db_connection()
@@ -334,7 +326,7 @@ def admin_callbacks(call):
         sel = state.get('selected')
         if not sel: return bot.answer_callback_query(call.id, "Select instruction!", show_alert=True)
         
-        inst_texts = {'1': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং মিম পেইজ দিয়েই কিছুটা সময় পর সকল গ্রুপে পোস্ট করুন।", '2': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর মিম পেইজ দিয়েই শুধুমাত্র মিমগ্রুপে পোস্ট করুন।", '3': "নিজ মডারেটর আইডি থেকে সকল গ্রুপে পোস্ট করুন।", '4': "নিজ মডারেটর আইডি থেকে শুধুমাত্র মিম গ্রুপে পোস্ট করুন।", '5': "নিজ মডারেটর আইডি থেকে Annonymous ভাবে বা সেকেন্ড যেকোনো আইডি থেকে সরাসরি শুধু মিম গ্রুপে পোস্ট করুন।", '❌': "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন।" }
+        inst_texts = {'1': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং মিম পেইজ দিয়েই কিছুটা সময় পর সকল গ্রুপে পোস্ট করুন।", '2': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর মিম পেইজ দিয়েই শুধুমাত্র মিমগ্রুপে পোস্ট করুন।", '3': "নিজ মডারেটর আইডি থেকে সকল গ্রুপে পোস্ট করুন।", '4': "নিজ মডারেটর আইডি থেকে শুধুমাত্র মিম গ্রুপে পোস্ট করুন।", '5': "নিজ মডারেটর আইডি থেকে Annonymous ভাবে বা সেকেন্ড যেকোনো আইডি থেকে সরাসরি শুধু মিম গ্রুপে পোস্ট করুন।", '❌': "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন。" }
         msg_text = inst_texts[sel]
         tg_id, sub_id, c_type = state['tg_id'], state['sub_id'], state['c_type']
         month_name = datetime.now().strftime("%B")
@@ -354,7 +346,6 @@ def admin_callbacks(call):
         except: pass
         bot.send_message(call.message.chat.id, "Instruction Sent & Count Updated!✅")
 
-# --- Task Steps ---
 def step_add_task_num(message):
     if message.text == "Cancel": return bot.send_message(message.chat.id, "Process Cancelled✅")
     try:
@@ -416,7 +407,6 @@ def step_org_task(message):
     conn.commit()
     conn.close()
 
-# ⏰ Background Auto-Timer (24h & 48h Logic)
 def auto_task_timer():
     while True:
         try:
@@ -434,7 +424,6 @@ def auto_task_timer():
                 t_msgs = cursor.fetchone()
                 if not t_msgs: continue
                 
-                # Fetch members who haven't completed
                 cursor.execute("""
                     SELECT m.telegram_id FROM members m 
                     LEFT JOIN user_task_status uts ON m.telegram_id = uts.telegram_id AND uts.task_num = %s
@@ -455,12 +444,12 @@ def auto_task_timer():
                         except: pass
                     cursor.execute("UPDATE active_assignments SET current_msg = 3 WHERE id = %s", (assign['id'],))
                     
-                elif diff >= 72: # Clear assignment after 3 days
+                elif diff >= 72:
                     cursor.execute("DELETE FROM active_assignments WHERE id = %s", (assign['id'],))
             conn.commit()
             conn.close()
         except Exception as e: print("Timer Error:", e)
-        time.sleep(3600) # Check every 1 hour
+        time.sleep(3600)
 
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
@@ -472,4 +461,16 @@ if __name__ == "__main__":
     t_timer.start()
     
     print("🤖 BKLn Task Submit Bot is Active...")
-    bot.infinity_polling(skip_pending=True)
+    
+    # Clean up any existing webhook or conflict before polling
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception: pass
+
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
+        except Exception as e:
+            print(f"Polling error: {e}")
+            time.sleep(5)
