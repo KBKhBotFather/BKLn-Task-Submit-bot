@@ -14,11 +14,21 @@ DB_URI = (os.environ.get("DATABASE_URL") or "").strip()
 ADMIN_CHAT_ID = (os.environ.get("ADMIN_ID") or "").strip()
 
 bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask('')
+
+# 🌐 Flask Server for UptimeRobot
+app = Flask(__name__)
 
 @app.route('/')
-def home(): return "BKLn Task Submit Bot is Alive & Running!"
-def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+def home(): 
+    return "BKLn Task Submit Bot is Alive & Running!", 200
+
+@app.route('/ping')
+def ping():
+    return "OK", 200
+
+def run_flask(): 
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
 
 def get_db_connection():
     uri = DB_URI
@@ -326,7 +336,7 @@ def admin_callbacks(call):
         sel = state.get('selected')
         if not sel: return bot.answer_callback_query(call.id, "Select instruction!", show_alert=True)
         
-        inst_texts = {'1': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং মিম পেইজ দিয়েই কিছুটা সময় পর সকল গ্রুপে পোস্ট করুন।", '2': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর মিম পেইজ দিয়েই শুধুমাত্র মিমগ্রুপে পোস্ট করুন।", '3': "নিজ মডারেটর আইডি থেকে সকল গ্রুপে পোস্ট করুন।", '4': "নিজ মডারেটর আইডি থেকে শুধুমাত্র মিম গ্রুপে পোস্ট করুন।", '5': "নিজ মডারেটর আইডি থেকে Annonymous ভাবে বা সেকেন্ড যেকোনো আইডি থেকে সরাসরি শুধু মিম গ্রুপে পোস্ট করুন।", '❌': "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন。" }
+        inst_texts = {'1': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং মিম পেইজ দিয়েই কিছুটা সময় পর সকল গ্রুপে পোস্ট করুন।", '2': "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর মিম পেইজ দিয়েই শুধুমাত্র মিমগ্রুপে পোস্ট করুন।", '3': "নিজ মডারেটর আইডি থেকে সকল গ্রুপে পোস্ট করুন।", '4': "নিজ মডারেটর আইডি থেকে শুধুমাত্র মিম গ্রুপে পোস্ট করুন।", '5': "নিজ মডারেটর আইডি থেকে Annonymous ভাবে বা সেকেন্ড যেকোনো আইডি থেকে সরাসরি শুধু মিম গ্রুপে পোস্ট করুন।", '❌': "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন।" }
         msg_text = inst_texts[sel]
         tg_id, sub_id, c_type = state['tg_id'], state['sub_id'], state['c_type']
         month_name = datetime.now().strftime("%B")
@@ -462,7 +472,6 @@ if __name__ == "__main__":
     
     print("🤖 BKLn Task Submit Bot is Active...")
     
-    # Clean up any existing webhook or conflict before polling
     try:
         bot.remove_webhook()
         time.sleep(1)
