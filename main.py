@@ -458,7 +458,6 @@ def admin_callbacks(call):
             if i < len(teams):
                 cursor.execute("DELETE FROM active_assignments WHERE team_name = %s", (teams[i],))
                 cursor.execute("INSERT INTO active_assignments (team_name, task_num, scheduled_for, is_started, current_msg) VALUES (%s, %s, %s, FALSE, 0)", (teams[i], t_num, next_midnight))
-                # Add total task logic for month
                 cursor.execute("UPDATE task_records SET task_total = task_total + 1 WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s) AND month = %s", (teams[i], month_name))
         conn.commit()
         conn.close()
@@ -620,8 +619,7 @@ def step_add_main_msg(message):
         admin_states['wait_mi'] = num
         msg = bot.send_message(message.chat.id, f"Please provide the text for instruction {num}:", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="acanc")))
         bot.register_next_step_handler(msg, step_finalize_add_main)
-    except:
-        bot.send_message(message.chat.id, "Invalid number. Process Cancelled.")
+    except: bot.send_message(message.chat.id, "Invalid number.")
 
 def step_finalize_add_main(message):
     num = admin_states.get('wait_mi')
@@ -761,6 +759,18 @@ if __name__ == "__main__":
     t_timer.start()
     
     print("🤖 BKLn Task Submit Bot is Active...")
-    try: bot.remove_webhook(); time.sleep(1)
-    except: pass
-    bot.infinity_polling(skip_pending=True)
+    
+    while True:
+        try:
+            bot.remove_webhook()
+            time.sleep(2)
+            bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
+        except telebot.apihelper.ApiTelegramException as e:
+            if e.error_code == 409:
+                print("Conflict Error 409: Waiting for older instance to shut down...")
+                time.sleep(10) # 409 এরর আসলে বট ক্র্যাশ না করে ১০ সেকেন্ড ওয়েট করবে
+            else:
+                time.sleep(5)
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(5)
