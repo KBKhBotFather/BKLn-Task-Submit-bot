@@ -30,10 +30,9 @@ def get_db_connection():
 def init_db():
     try:
         conn = get_db_connection()
-        conn.autocommit = True # Auto-commit ON for schema upgrades
+        conn.autocommit = True
         cursor = conn.cursor()
         
-        # 1. Create Tables
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 id SERIAL PRIMARY KEY, telegram_id BIGINT, content_type TEXT, special_category TEXT, 
@@ -62,7 +61,6 @@ def init_db():
             );
         """)
         
-        # 2. Add Default Instructions
         default_inst = {
             1: "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং মিম পেইজ দিয়েই কিছুটা সময় পর সকল গ্রুপে পোস্ট করুন।",
             2: "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর মিম পেইজ দিয়েই শুধুমাত্র মিমগ্রুপে পোস্ট করুন।",
@@ -74,7 +72,6 @@ def init_db():
             try: cursor.execute("INSERT INTO custom_instructions (id, instruction_text) VALUES (%s, %s) ON CONFLICT DO NOTHING", (k, v))
             except: pass
             
-        # 3. Force Database Upgrades (Fixing the Missing Columns)
         upgrade_queries = [
             "ALTER TABLE tasks ADD COLUMN task_num INT;",
             "ALTER TABLE tasks ADD COLUMN msg_1 TEXT;",
@@ -87,7 +84,11 @@ def init_db():
         ]
         for query in upgrade_queries:
             try: cursor.execute(query)
-            except: pass # Ignore if column already exists
+            except: pass
+            
+        # Clean up any 'Task - None' bugs
+        try: cursor.execute("DELETE FROM tasks WHERE task_num IS NULL;")
+        except: pass
 
         conn.close()
     except Exception as e: print(f"DB Init Error: {e}")
@@ -334,7 +335,8 @@ def triggered_task_menu(message):
     if str(message.from_user.id) != ADMIN_CHAT_ID: return
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("SELECT team_name, task_num, is_started FROM active_assignments ORDER BY team_name")
+    # 🔴 FIX 3: Ordering strict sequence by ASC ID
+    cursor.execute("SELECT team_name, task_num, is_started FROM active_assignments ORDER BY id ASC")
     assigns = cursor.fetchall()
     conn.close()
     if not assigns: return bot.send_message(message.chat.id, "No Task Triggered!")
@@ -383,6 +385,11 @@ def admin_callbacks(call):
 
     try:
         if data == "acanc":
+            # 🔴 FIX 1 & 2 Cleanup Logic
+            if 'clean_msgs' in admin_states.get(adm_id, {}):
+                for m_id in admin_states[adm_id]['clean_msgs']:
+                    try: bot.delete_message(call.message.chat.id, m_id)
+                    except: pass
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.clear_step_handler_by_chat_id(call.message.chat.id)
             admin_states[adm_id] = {}
@@ -458,15 +465,19 @@ def admin_callbacks(call):
             
             next_t = max_t + 1
             admin_states[adm_id]['t_num'] = next_t
+            admin_states[adm_id]['clean_msgs'] = []
+            
             bot.delete_message(call.message.chat.id, call.message.message_id)
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="acanc"))
             msg = bot.send_message(call.message.chat.id, f"Give the first message of the Task -{next_t}:", reply_markup=markup)
+            admin_states[adm_id]['clean_msgs'].append(msg.message_id)
             bot.register_next_step_handler(msg, step_add_msg1)
             
         elif data.startswith("ta_end_"):
             count = int(data.split("_")[2])
-            bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.clear_step_handler_by_chat_id(call.message.chat.id)
+            if 'clean_msgs' in admin_states[adm_id]:
+                admin_states[adm_id]['clean_msgs'].append(call.message.message_id)
             finalize_task(adm_id, call.message.chat.id, count)
 
         elif data == "ta_list":
@@ -493,6 +504,13 @@ def admin_callbacks(call):
         elif data == "ta_assign":
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # 🔴 FIX 4: Overwrite Protection
+            cursor.execute("SELECT COUNT(*) FROM active_assignments")
+            if cursor.fetchone()['count'] > 0:
+                conn.close()
+                return bot.answer_callback_query(call.id, "Already assigned a Task! Please stop it first in Triggered Task.", show_alert=True)
+                
             cursor.execute("SELECT * FROM organized_tasks")
             orgs = cursor.fetchall()
             conn.close()
@@ -589,6 +607,36 @@ def admin_callbacks(call):
             admin_states[adm_id]['wait_ti'] = {'t_num': t_num, 'msg_idx': msg_idx}
             bot.register_next_step_handler(msg, step_update_task_msg)
 
+        # 🔴 FIX 2: Task Delete System inside Edit Instructions
+        elif data.startswith("ti_del_sel_"):
+            t_num = int(data.split("_")[3])
+            admin_states[adm_id]['del_task'] = t_num
+            markup = get_task_edit_keyboard(adm_id, t_num)
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+            
+        elif data == "ti_del_sub":
+            t_num = admin_states[adm_id].get('del_task')
+            if not t_num: return bot.send_message(call.message.chat.id, "Select one to delete!")
+            
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("DELETE FROM tasks WHERE task_num = %s", (t_num,))
+            
+            # Clean matching organized lists
+            cursor.execute("SELECT id, sequence FROM organized_tasks")
+            orgs = cursor.fetchall()
+            for org in orgs:
+                if str(t_num) in org['sequence'].split(','):
+                    cursor.execute("DELETE FROM organized_tasks WHERE id = %s", (org['id'],))
+            
+            conn.commit()
+            conn.close()
+            
+            admin_states[adm_id]['del_task'] = None
+            markup = get_task_edit_keyboard(adm_id)
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+            bot.answer_callback_query(call.id, "Task Deleted Successfully!", show_alert=True)
+
         # 4. Main Instructions Menu
         elif data == "ei_main":
             markup, text = get_main_inst_keyboard(adm_id)
@@ -663,7 +711,7 @@ def get_admin_instruction_keyboard(sub_id, selected=None):
     markup.row(InlineKeyboardButton("Submit", callback_data=f"isub_{sub_id}"), InlineKeyboardButton("Cancel", callback_data="acanc"))
     return markup
 
-def get_task_edit_keyboard(adm_id):
+def get_task_edit_keyboard(adm_id, sel_del_id=None):
     markup = InlineKeyboardMarkup()
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -673,17 +721,33 @@ def get_task_edit_keyboard(adm_id):
 
     exp = admin_states.get(adm_id, {}).get('edit_task_exp')
 
+    if not tasks:
+        markup.row(InlineKeyboardButton("Back", callback_data="ei_back"), InlineKeyboardButton("Cancel", callback_data="acanc"))
+        return markup
+
     for t in tasks:
         t_num = t['task_num']
+        del_icon = "❌" if str(sel_del_id) == str(t_num) else "🔳"
+        
+        row = []
         if exp == t_num:
-            markup.row(InlineKeyboardButton(f"Task - {t_num} 🔻", callback_data=f"ti_exp_{t_num}"))
+            row.append(InlineKeyboardButton(f"Task - {t_num} 🔻", callback_data=f"ti_exp_{t_num}"))
+        else:
+            row.append(InlineKeyboardButton(f"Task - {t_num} 🔺", callback_data=f"ti_exp_{t_num}"))
+            
+        row.append(InlineKeyboardButton(del_icon, callback_data=f"ti_del_sel_{t_num}"))
+        markup.row(*row)
+
+        if exp == t_num:
             btns = []
             if t['msg_1']: btns.append(InlineKeyboardButton("1", callback_data=f"ti_edit_{t_num}_1"))
             if t['msg_2']: btns.append(InlineKeyboardButton("2", callback_data=f"ti_edit_{t_num}_2"))
             if t['msg_3']: btns.append(InlineKeyboardButton("3", callback_data=f"ti_edit_{t_num}_3"))
             if btns: markup.row(*btns)
-        else:
-            markup.row(InlineKeyboardButton(f"Task - {t_num} 🔺", callback_data=f"ti_exp_{t_num}"))
+            
+    if sel_del_id:
+        markup.row(InlineKeyboardButton("Submit", callback_data="ti_del_sub"))
+        
     markup.row(InlineKeyboardButton("Back", callback_data="ei_back"), InlineKeyboardButton("Cancel", callback_data="acanc"))
     return markup
 
@@ -747,37 +811,56 @@ def step_add_msg1(message):
     adm_id = message.from_user.id
     if adm_id not in admin_states or 't_num' not in admin_states[adm_id]: return
     admin_states[adm_id]['msg_1'] = message.text
+    admin_states[adm_id]['clean_msgs'].append(message.message_id)
+    
     next_t = admin_states[adm_id]['t_num']
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"), InlineKeyboardButton("End", callback_data="ta_end_1"))
     msg = bot.send_message(message.chat.id, f"Give the second message of the Task -{next_t}:", reply_markup=markup)
+    admin_states[adm_id]['clean_msgs'].append(msg.message_id)
     bot.register_next_step_handler(msg, step_add_msg2)
 
 def step_add_msg2(message):
     adm_id = message.from_user.id
     if adm_id not in admin_states or 't_num' not in admin_states[adm_id]: return
     admin_states[adm_id]['msg_2'] = message.text
+    admin_states[adm_id]['clean_msgs'].append(message.message_id)
+    
     next_t = admin_states[adm_id]['t_num']
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"), InlineKeyboardButton("End", callback_data="ta_end_2"))
     msg = bot.send_message(message.chat.id, f"Give the Third message of the Task -{next_t}:", reply_markup=markup)
+    admin_states[adm_id]['clean_msgs'].append(msg.message_id)
     bot.register_next_step_handler(msg, step_add_msg3)
 
 def step_add_msg3(message):
     adm_id = message.from_user.id
     if adm_id not in admin_states: return
     admin_states[adm_id]['msg_3'] = message.text
+    admin_states[adm_id]['clean_msgs'].append(message.message_id)
     finalize_task(adm_id, message.chat.id, 3)
 
 def finalize_task(adm_id, chat_id, count):
     state = admin_states.get(adm_id, {})
+    t_num = state.get('t_num')
+    if not t_num: return
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO tasks (task_num, msg_1, msg_2, msg_3) VALUES (%s, %s, %s, %s) ON CONFLICT (task_num) DO UPDATE SET msg_1=EXCLUDED.msg_1, msg_2=EXCLUDED.msg_2, msg_3=EXCLUDED.msg_3", 
-                   (state.get('t_num'), state.get('msg_1'), state.get('msg_2', None), state.get('msg_3', None)))
+                   (t_num, state.get('msg_1'), state.get('msg_2', None), state.get('msg_3', None)))
     conn.commit()
     conn.close()
-    bot.send_message(chat_id, f"All your messages for Task-{state.get('t_num')} have been successfully added!✅")
+    
+    # Clean up chat feed!
+    for m_id in state.get('clean_msgs', []):
+        try: bot.delete_message(chat_id, m_id)
+        except: pass
+        
+    admin_states[adm_id].pop('t_num', None)
+    admin_states[adm_id].pop('clean_msgs', None)
+    
+    bot.send_message(chat_id, f"All your messages for Task-{t_num} have been successfully added!✅")
 
 def step_org_task(message):
     seq = message.text.replace(" ", "")
