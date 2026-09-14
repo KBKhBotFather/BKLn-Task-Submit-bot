@@ -30,14 +30,17 @@ def get_db_connection():
 def init_db():
     try:
         conn = get_db_connection()
+        conn.autocommit = True # Auto-commit ON for schema upgrades
         cursor = conn.cursor()
+        
+        # 1. Create Tables
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 id SERIAL PRIMARY KEY, telegram_id BIGINT, content_type TEXT, special_category TEXT, 
                 photo_id TEXT, media_type TEXT DEFAULT 'photo', status TEXT DEFAULT 'Pending', assigned_instruction TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS tasks (
-                id SERIAL PRIMARY KEY, task_num INT UNIQUE, msg_1 TEXT, msg_2 TEXT, msg_3 TEXT
+                id SERIAL PRIMARY KEY, task_num INT, msg_1 TEXT, msg_2 TEXT, msg_3 TEXT
             );
             CREATE TABLE IF NOT EXISTS organized_tasks (
                 id SERIAL PRIMARY KEY, sequence TEXT
@@ -59,6 +62,7 @@ def init_db():
             );
         """)
         
+        # 2. Add Default Instructions
         default_inst = {
             1: "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং মিম পেইজ দিয়েই কিছুটা সময় পর সকল গ্রুপে পোস্ট করুন।",
             2: "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর মিম পেইজ দিয়েই শুধুমাত্র মিমগ্রুপে পোস্ট করুন।",
@@ -67,12 +71,24 @@ def init_db():
             5: "নিজ মডারেটর আইডি থেকে Annonymous ভাবে বা সেকেন্ড যেকোনো আইডি থেকে সরাসরি শুধু মিম গ্রুপে পোস্ট করুন।"
         }
         for k, v in default_inst.items():
-            cursor.execute("INSERT INTO custom_instructions (id, instruction_text) VALUES (%s, %s) ON CONFLICT DO NOTHING", (k, v))
+            try: cursor.execute("INSERT INTO custom_instructions (id, instruction_text) VALUES (%s, %s) ON CONFLICT DO NOTHING", (k, v))
+            except: pass
             
-        try: cursor.execute("ALTER TABLE submissions ADD COLUMN media_type TEXT DEFAULT 'photo';")
-        except: pass
+        # 3. Force Database Upgrades (Fixing the Missing Columns)
+        upgrade_queries = [
+            "ALTER TABLE tasks ADD COLUMN task_num INT;",
+            "ALTER TABLE tasks ADD COLUMN msg_1 TEXT;",
+            "ALTER TABLE tasks ADD COLUMN msg_2 TEXT;",
+            "ALTER TABLE tasks ADD COLUMN msg_3 TEXT;",
+            "ALTER TABLE tasks ADD CONSTRAINT unique_task_num UNIQUE(task_num);",
+            "ALTER TABLE submissions ADD COLUMN media_type TEXT DEFAULT 'photo';",
+            "ALTER TABLE active_assignments ADD COLUMN scheduled_for TIMESTAMP;",
+            "ALTER TABLE active_assignments ADD COLUMN is_started BOOLEAN DEFAULT FALSE;"
+        ]
+        for query in upgrade_queries:
+            try: cursor.execute(query)
+            except: pass # Ignore if column already exists
 
-        conn.commit()
         conn.close()
     except Exception as e: print(f"DB Init Error: {e}")
 
@@ -354,7 +370,7 @@ def handle_admin_task_status(message):
     bot.send_message(message.chat.id, text)
     conn.close()
 
-# 📌 ADMIN: Callbacks - ALL WRAPPED IN TRY EXCEPT FOR 100% SAFETY
+# 📌 ADMIN: Callbacks
 @bot.callback_query_handler(func=lambda call: call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_"))
 def admin_callbacks(call):
     adm_id = call.from_user.id
@@ -362,7 +378,6 @@ def admin_callbacks(call):
     data = call.data
 
     if adm_id not in admin_states: admin_states[adm_id] = {}
-
     try: bot.answer_callback_query(call.id)
     except: pass
 
@@ -620,7 +635,7 @@ def admin_callbacks(call):
 
         elif data == "mi_click":
             sel_id = admin_states[adm_id].get('edit_main')
-            if not sel_id: return
+            if not sel_id: return bot.send_message(call.message.chat.id, "Select one first!")
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM custom_instructions WHERE id = %s", (sel_id,))
