@@ -12,7 +12,7 @@ from flask import Flask
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
 DB_URI = (os.environ.get("DATABASE_URL") or "").strip()
 ADMIN_CHAT_ID = (os.environ.get("ADMIN_ID") or "").strip()
-BRAFT_GROUP_ID = -1003913949837  # 🔴 Added BKLn Braft Group ID
+BRAFT_GROUP_ID = -1003913949837
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -167,7 +167,6 @@ def handle_media_submission(message):
     user_photo_states[tg_id][msg_id] = {'file_id': file_id, 'media_type': media_type}
     
     markup = InlineKeyboardMarkup(row_width=2)
-    # 🔴 Task button display logic
     if active_task and not task_completed:
         user_photo_states[tg_id][msg_id]['active_task_num'] = active_task['task_num']
         markup.add(InlineKeyboardButton("General Post", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
@@ -271,9 +270,15 @@ def handle_task_display(message):
         cursor.execute("SELECT completed FROM user_task_status WHERE telegram_id = %s AND task_num = %s", (tg_id, assign['task_num']))
         uts = cursor.fetchone()
         
-        # 🔴 Check if Task is completed
         if uts and uts['completed']:
-            bot.send_message(message.chat.id, "You have successfully completed the Task!✅")
+            # 🔴 Logic Check: Is it Pending or Reviewed by Admin?
+            cursor.execute("SELECT status FROM submissions WHERE telegram_id = %s AND content_type = %s ORDER BY id DESC LIMIT 1", (tg_id, f"Task-{assign['task_num']}"))
+            sub_status = cursor.fetchone()
+            
+            if sub_status and sub_status['status'] == 'Pending':
+                bot.send_message(message.chat.id, "Your task has been successfully submitted.\nTask Status: Pending!⏳")
+            else:
+                bot.send_message(message.chat.id, "You have successfully completed the Task!✅")
         else:
             cursor.execute("SELECT msg_1, msg_2, msg_3 FROM tasks WHERE task_num = %s", (assign['task_num'],))
             t_data = cursor.fetchone()
@@ -366,7 +371,11 @@ def triggered_task_menu(message):
     for a in assigns: text += f"{a['team_name']} - Task {a['task_num']}\n"
     text += f"\nTask Status: {'Started!🟢' if is_st else 'Not Assigned yet!🔴'}"
     markup = InlineKeyboardMarkup(row_width=2)
-    if not is_st: markup.add(InlineKeyboardButton("Stop Task", callback_data="ta_stop"))
+    if not is_st: 
+        markup.add(InlineKeyboardButton("Stop Task", callback_data="ta_stop"))
+    else:
+        # 🔴 Added 'End' button for running tasks
+        markup.add(InlineKeyboardButton("End", callback_data="ta_force_end"))
     markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
@@ -414,7 +423,7 @@ def admin_callbacks(call):
             admin_states[adm_id] = {}
             return
 
-        # 1. Admin Review (Added Name and Date Format)
+        # 1. Admin Review
         elif data.startswith("arev_"):
             target_tg_id = int(data.split("_")[1])
             conn = get_db_connection()
@@ -426,11 +435,14 @@ def admin_callbacks(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
             if not subs: return bot.send_message(call.message.chat.id, "No pending content.")
             for sub in subs:
-                # 🔴 Date Formatting added
                 dt = sub.get('created_at')
                 sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
-                caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
                 
+                # 🔴 ⭐Special Task tag added
+                caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
+                if sub['content_type'].startswith('Task-'):
+                    caption_text += "\n⭐Special Task"
+                    
                 markup = get_admin_instruction_keyboard(sub['id'])
                 if sub.get('media_type') == 'video':
                     bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
@@ -463,7 +475,6 @@ def admin_callbacks(call):
 
             if sel == '❌': 
                 msg_text = "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন।"
-                # 🔴 Cross Logic (Bring back Special Task option)
                 if c_type.startswith('Task-'):
                     try:
                         t_num = int(c_type.split('-')[1])
@@ -477,7 +488,6 @@ def admin_callbacks(call):
                 if c_type == 'Special Post': cursor.execute("UPDATE task_records SET special_post = special_post + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
                 elif c_type.startswith('Task'): cursor.execute("UPDATE task_records SET task_done = task_done + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
                 
-                # 🔴 BKLn Braft Group Forwarding for Instruction 1
                 if str(sel) == '1' and (c_type == 'Special Post' or c_type.startswith('Task')):
                     try:
                         braft_cap = f"Name: {fb_name}\nDate: {sub_date}"
@@ -616,6 +626,22 @@ def admin_callbacks(call):
             conn.close()
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "Task Assign Cancelled Successfully✅")
+            
+        # 🔴 Force End Task (Manual)
+        elif data == "ta_force_end":
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(InlineKeyboardButton("Yes", callback_data="ta_force_end_yes"), InlineKeyboardButton("No", callback_data="acanc"))
+            bot.send_message(call.message.chat.id, "Are you sure you want to end the Task?", reply_markup=markup)
+            
+        elif data == "ta_force_end_yes":
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM active_assignments WHERE is_started = TRUE")
+            conn.commit()
+            conn.close()
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.send_message(call.message.chat.id, "Task Successfully end!✅")
 
         # 3. Edit Instructions Menu
         elif data == "ei_task":
@@ -926,7 +952,7 @@ def step_org_task(message):
     conn.commit()
     conn.close()
 
-# ⏰ Background Auto-Timer
+# ⏰ Background Auto-Timer (With Auto End Task logic)
 def auto_task_timer():
     while True:
         try:
@@ -952,6 +978,17 @@ def auto_task_timer():
                 
                 if not is_st: continue 
                 
+                # 🔴 Auto End Task Check
+                cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
+                total_members = cursor.fetchone()['count']
+                
+                cursor.execute("SELECT COUNT(*) FROM user_task_status uts JOIN members m ON uts.telegram_id = m.telegram_id WHERE m.team_name = %s AND uts.task_num = %s AND uts.completed = TRUE", (team, t_num))
+                done_members = cursor.fetchone()['count']
+                
+                if total_members > 0 and done_members >= total_members:
+                    cursor.execute("DELETE FROM active_assignments WHERE id = %s", (assign['id'],))
+                    continue
+
                 diff_hours = (now - sched).total_seconds() / 3600
                 cursor.execute("SELECT msg_2, msg_3 FROM tasks WHERE task_num = %s", (t_num,))
                 t_msgs = cursor.fetchone()
