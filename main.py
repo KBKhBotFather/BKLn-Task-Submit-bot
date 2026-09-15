@@ -138,7 +138,6 @@ def send_welcome(message):
         return
     bot.send_message(message.chat.id, "Welcome to KBKh Bot Ecosystem!\nYou can submit tasks directly here...", reply_markup=member_main_menu())
 
-# 🔴 Secret Admin Command to force-start tasks immediately (helpful for testing/recovering)
 @bot.message_handler(commands=['start_task_now'])
 def force_start_task(message):
     if str(message.from_user.id) != ADMIN_CHAT_ID: return
@@ -611,8 +610,6 @@ def admin_callbacks(call):
             for i, t_num in enumerate(tasks):
                 if i < len(teams):
                     cursor.execute("DELETE FROM active_assignments WHERE team_name = %s", (teams[i],))
-                    
-                    # 🔴 CRITICAL FIX: Delete any previous task completion memory for this team!
                     cursor.execute("DELETE FROM user_task_status WHERE task_num = %s AND telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s)", (t_num, teams[i]))
                     
                     cursor.execute("INSERT INTO active_assignments (team_name, task_num, scheduled_for, is_started, current_msg) VALUES (%s, %s, %s, FALSE, 0)", (teams[i], t_num, next_midnight))
@@ -960,7 +957,7 @@ def step_org_task(message):
     conn.commit()
     conn.close()
 
-# ⏰ Background Auto-Timer (Fixed 60 sec precision)
+# ⏰ Background Auto-Timer (Fixed for 0 members)
 def auto_task_timer():
     while True:
         try:
@@ -986,13 +983,14 @@ def auto_task_timer():
                 
                 if not is_st: continue 
                 
+                # 🔴 CRITICAL FIX: Checking if team has 0 members, or everyone finished
                 cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
                 total_members = cursor.fetchone()['count']
                 
                 cursor.execute("SELECT COUNT(*) FROM user_task_status uts JOIN members m ON uts.telegram_id = m.telegram_id WHERE m.team_name = %s AND uts.task_num = %s AND uts.completed = TRUE", (team, t_num))
                 done_members = cursor.fetchone()['count']
                 
-                if total_members > 0 and done_members >= total_members:
+                if total_members == 0 or done_members >= total_members:
                     cursor.execute("DELETE FROM active_assignments WHERE id = %s", (assign['id'],))
                     continue
 
@@ -1024,7 +1022,7 @@ def auto_task_timer():
             conn.commit()
             conn.close()
         except Exception as e: print("Timer Error:", e)
-        time.sleep(60) # 🔴 CRITICAL FIX: Checking every 1 minute exactly
+        time.sleep(60)
 
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
