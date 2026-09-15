@@ -138,6 +138,18 @@ def send_welcome(message):
         return
     bot.send_message(message.chat.id, "Welcome to KBKh Bot Ecosystem!\nYou can submit tasks directly here...", reply_markup=member_main_menu())
 
+# 🔴 Secret Admin Command to force-start tasks immediately (helpful for testing/recovering)
+@bot.message_handler(commands=['start_task_now'])
+def force_start_task(message):
+    if str(message.from_user.id) != ADMIN_CHAT_ID: return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now = get_bd_time()
+    cursor.execute("UPDATE active_assignments SET scheduled_for = %s WHERE is_started = FALSE", (now,))
+    conn.commit()
+    conn.close()
+    bot.send_message(message.chat.id, "All pending tasks have been fast-forwarded to START NOW!🟢\n(Wait up to 1 minute for messages to arrive)")
+
 # 📌 USER: Submissions (Photos & Videos)
 @bot.message_handler(content_types=['photo', 'video'])
 def handle_media_submission(message):
@@ -271,7 +283,6 @@ def handle_task_display(message):
         uts = cursor.fetchone()
         
         if uts and uts['completed']:
-            # 🔴 Logic Check: Is it Pending or Reviewed by Admin?
             cursor.execute("SELECT status FROM submissions WHERE telegram_id = %s AND content_type = %s ORDER BY id DESC LIMIT 1", (tg_id, f"Task-{assign['task_num']}"))
             sub_status = cursor.fetchone()
             
@@ -374,7 +385,6 @@ def triggered_task_menu(message):
     if not is_st: 
         markup.add(InlineKeyboardButton("Stop Task", callback_data="ta_stop"))
     else:
-        # 🔴 Added 'End' button for running tasks
         markup.add(InlineKeyboardButton("End", callback_data="ta_force_end"))
     markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
     bot.send_message(message.chat.id, text, reply_markup=markup)
@@ -423,7 +433,6 @@ def admin_callbacks(call):
             admin_states[adm_id] = {}
             return
 
-        # 1. Admin Review
         elif data.startswith("arev_"):
             target_tg_id = int(data.split("_")[1])
             conn = get_db_connection()
@@ -438,7 +447,6 @@ def admin_callbacks(call):
                 dt = sub.get('created_at')
                 sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
                 
-                # 🔴 ⭐Special Task tag added
                 caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
                 if sub['content_type'].startswith('Task-'):
                     caption_text += "\n⭐Special Task"
@@ -508,7 +516,6 @@ def admin_callbacks(call):
             except: pass
             bot.send_message(call.message.chat.id, "Instruction Sent & Count Updated!✅")
             
-        # 2. Task Assign System
         elif data == "ta_add":
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -604,6 +611,10 @@ def admin_callbacks(call):
             for i, t_num in enumerate(tasks):
                 if i < len(teams):
                     cursor.execute("DELETE FROM active_assignments WHERE team_name = %s", (teams[i],))
+                    
+                    # 🔴 CRITICAL FIX: Delete any previous task completion memory for this team!
+                    cursor.execute("DELETE FROM user_task_status WHERE task_num = %s AND telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s)", (t_num, teams[i]))
+                    
                     cursor.execute("INSERT INTO active_assignments (team_name, task_num, scheduled_for, is_started, current_msg) VALUES (%s, %s, %s, FALSE, 0)", (teams[i], t_num, next_midnight))
                     cursor.execute("INSERT INTO task_records (telegram_id, month, task_total) SELECT telegram_id, %s, 1 FROM members WHERE team_name = %s ON CONFLICT (telegram_id, month) DO UPDATE SET task_total = task_records.task_total + 1", (month_name, teams[i]))
             conn.commit()
@@ -627,7 +638,6 @@ def admin_callbacks(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "Task Assign Cancelled Successfully✅")
             
-        # 🔴 Force End Task (Manual)
         elif data == "ta_force_end":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             markup = InlineKeyboardMarkup(row_width=2)
@@ -769,7 +779,6 @@ def admin_callbacks(call):
     except Exception as e:
         bot.send_message(ADMIN_CHAT_ID, f"⚠️ System Debug Error: {str(e)}\nPlease try clicking the button again.")
 
-# --- Admin Keyboards Builders ---
 def get_admin_instruction_keyboard(sub_id, selected=None):
     markup = InlineKeyboardMarkup(row_width=6)
     labels = ['1', '2', '3', '4', '5', '❌']
@@ -840,7 +849,6 @@ def get_main_inst_keyboard(adm_id, sel_id=None):
     markup.row(InlineKeyboardButton("Back", callback_data="ei_back"), InlineKeyboardButton("Cancel", callback_data="acanc"))
     return markup, "Main Instructions:"
 
-# --- Admin Step Handlers ---
 def step_update_task_msg(message):
     adm_id = message.from_user.id
     state = admin_states.get(adm_id, {}).get('wait_ti')
@@ -952,7 +960,7 @@ def step_org_task(message):
     conn.commit()
     conn.close()
 
-# ⏰ Background Auto-Timer (With Auto End Task logic)
+# ⏰ Background Auto-Timer (Fixed 60 sec precision)
 def auto_task_timer():
     while True:
         try:
@@ -978,7 +986,6 @@ def auto_task_timer():
                 
                 if not is_st: continue 
                 
-                # 🔴 Auto End Task Check
                 cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
                 total_members = cursor.fetchone()['count']
                 
@@ -1017,7 +1024,7 @@ def auto_task_timer():
             conn.commit()
             conn.close()
         except Exception as e: print("Timer Error:", e)
-        time.sleep(1800)
+        time.sleep(60) # 🔴 CRITICAL FIX: Checking every 1 minute exactly
 
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
