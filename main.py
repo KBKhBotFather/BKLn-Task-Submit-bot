@@ -404,7 +404,16 @@ def handle_admin_task_status(message):
         t_num, team = a['task_num'], a['team_name']
         cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
         total = cursor.fetchone()['count']
-        cursor.execute("SELECT COUNT(*) FROM user_task_status uts JOIN members m ON uts.telegram_id = m.telegram_id WHERE m.team_name = %s AND uts.task_num = %s AND uts.completed = TRUE", (team, t_num))
+        
+        # 🔴 FIXED: Counting only those whose task has been "Reviewed" by Admin
+        cursor.execute("""
+            SELECT COUNT(DISTINCT s.telegram_id) 
+            FROM submissions s 
+            JOIN members m ON s.telegram_id = m.telegram_id 
+            WHERE m.team_name = %s 
+              AND s.content_type = %s 
+              AND s.status = 'Reviewed'
+        """, (team, f"Task-{t_num}"))
         done = cursor.fetchone()['count']
         text += f"🔹 {team} (Task {t_num}): {done}/{total} Completed\n"
     bot.send_message(message.chat.id, text)
@@ -957,7 +966,7 @@ def step_org_task(message):
     conn.commit()
     conn.close()
 
-# ⏰ Background Auto-Timer (Fixed for 0 members)
+# ⏰ Background Auto-Timer (Fixed: Only counts tasks REVIEWED by Admin)
 def auto_task_timer():
     while True:
         try:
@@ -983,14 +992,21 @@ def auto_task_timer():
                 
                 if not is_st: continue 
                 
-                # 🔴 CRITICAL FIX: Checking if team has 0 members, or everyone finished
                 cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
                 total_members = cursor.fetchone()['count']
                 
-                cursor.execute("SELECT COUNT(*) FROM user_task_status uts JOIN members m ON uts.telegram_id = m.telegram_id WHERE m.team_name = %s AND uts.task_num = %s AND uts.completed = TRUE", (team, t_num))
+                # 🔴 CRITICAL FIX: Only counting if Admin has 'Reviewed' the submission
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT s.telegram_id) 
+                    FROM submissions s 
+                    JOIN members m ON s.telegram_id = m.telegram_id 
+                    WHERE m.team_name = %s 
+                      AND s.content_type = %s 
+                      AND s.status = 'Reviewed'
+                """, (team, f"Task-{t_num}"))
                 done_members = cursor.fetchone()['count']
                 
-                if total_members == 0 or done_members >= total_members:
+                if total_members == 0 or (total_members > 0 and done_members >= total_members):
                     cursor.execute("DELETE FROM active_assignments WHERE id = %s", (assign['id'],))
                     continue
 
