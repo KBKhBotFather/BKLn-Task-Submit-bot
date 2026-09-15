@@ -12,6 +12,7 @@ from flask import Flask
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
 DB_URI = (os.environ.get("DATABASE_URL") or "").strip()
 ADMIN_CHAT_ID = (os.environ.get("ADMIN_ID") or "").strip()
+BRAFT_GROUP_ID = -1003913949837  # 🔴 Added BKLn Braft Group ID
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -21,6 +22,10 @@ def home(): return "BKLn Task Submit Bot is Alive!", 200
 @app.route('/ping')
 def ping(): return "OK", 200
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+
+# 🕒 BD Time Helper
+def get_bd_time():
+    return datetime.utcnow() + timedelta(hours=6)
 
 def get_db_connection():
     uri = DB_URI
@@ -86,7 +91,6 @@ def init_db():
             try: cursor.execute(query)
             except: pass
             
-        # Clean up any 'Task - None' bugs
         try: cursor.execute("DELETE FROM tasks WHERE task_num IS NULL;")
         except: pass
 
@@ -150,17 +154,26 @@ def handle_media_submission(message):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT task_num FROM active_assignments WHERE team_name = %s AND is_started = TRUE", (user['team_name'],))
     active_task = cursor.fetchone()
+    
+    task_completed = False
+    if active_task:
+        cursor.execute("SELECT completed FROM user_task_status WHERE telegram_id = %s AND task_num = %s", (tg_id, active_task['task_num']))
+        uts = cursor.fetchone()
+        if uts and uts['completed']:
+            task_completed = True
     conn.close()
 
     if tg_id not in user_photo_states: user_photo_states[tg_id] = {}
     user_photo_states[tg_id][msg_id] = {'file_id': file_id, 'media_type': media_type}
     
     markup = InlineKeyboardMarkup(row_width=2)
-    if active_task:
+    # 🔴 Task button display logic
+    if active_task and not task_completed:
         user_photo_states[tg_id][msg_id]['active_task_num'] = active_task['task_num']
         markup.add(InlineKeyboardButton("General Post", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
     else:
         markup.add(InlineKeyboardButton("General Post", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Post", callback_data=f"tspf_{msg_id}"))
+    
     markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
     
     if media_type == 'photo': bot.send_photo(message.chat.id, file_id, reply_markup=markup)
@@ -219,7 +232,7 @@ def handle_user_submission_clicks(call):
             
         conn = get_db_connection()
         cursor = conn.cursor()
-        month_name = datetime.now().strftime("%B")
+        month_name = get_bd_time().strftime("%B")
         m_type = state.get('media_type', 'photo')
         
         if sel_type == 'General Post':
@@ -252,15 +265,23 @@ def handle_task_display(message):
     cursor.execute("SELECT task_num, current_msg FROM active_assignments WHERE team_name = %s AND is_started = TRUE", (user['team_name'],))
     assign = cursor.fetchone()
     
-    if not assign: bot.send_message(message.chat.id, "No Task Available at this moment!")
+    if not assign: 
+        bot.send_message(message.chat.id, "No Task Available at this moment!")
     else:
-        cursor.execute("SELECT msg_1, msg_2, msg_3 FROM tasks WHERE task_num = %s", (assign['task_num'],))
-        t_data = cursor.fetchone()
-        msgs = []
-        if t_data['msg_1'] and assign['current_msg'] >= 1: msgs.append(t_data['msg_1'])
-        if t_data['msg_2'] and assign['current_msg'] >= 2: msgs.append(t_data['msg_2'])
-        if t_data['msg_3'] and assign['current_msg'] >= 3: msgs.append(t_data['msg_3'])
-        bot.send_message(message.chat.id, "\n\n".join(msgs))
+        cursor.execute("SELECT completed FROM user_task_status WHERE telegram_id = %s AND task_num = %s", (tg_id, assign['task_num']))
+        uts = cursor.fetchone()
+        
+        # 🔴 Check if Task is completed
+        if uts and uts['completed']:
+            bot.send_message(message.chat.id, "You have successfully completed the Task!✅")
+        else:
+            cursor.execute("SELECT msg_1, msg_2, msg_3 FROM tasks WHERE task_num = %s", (assign['task_num'],))
+            t_data = cursor.fetchone()
+            msgs = []
+            if t_data['msg_1'] and assign['current_msg'] >= 1: msgs.append(t_data['msg_1'])
+            if t_data['msg_2'] and assign['current_msg'] >= 2: msgs.append(t_data['msg_2'])
+            if t_data['msg_3'] and assign['current_msg'] >= 3: msgs.append(t_data['msg_3'])
+            bot.send_message(message.chat.id, "\n\n".join(msgs))
     conn.close()
 
 @bot.message_handler(func=lambda msg: msg.text == "My Task Status")
@@ -270,7 +291,7 @@ def handle_my_task_status(message):
     user = get_member_info(tg_id)
     if not user: return
     
-    month_name = datetime.now().strftime("%B")
+    month_name = get_bd_time().strftime("%B")
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT * FROM task_records WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
@@ -335,7 +356,6 @@ def triggered_task_menu(message):
     if str(message.from_user.id) != ADMIN_CHAT_ID: return
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    # 🔴 FIX 3: Ordering strict sequence by ASC ID
     cursor.execute("SELECT team_name, task_num, is_started FROM active_assignments ORDER BY id ASC")
     assigns = cursor.fetchall()
     conn.close()
@@ -385,7 +405,6 @@ def admin_callbacks(call):
 
     try:
         if data == "acanc":
-            # 🔴 FIX 1 & 2 Cleanup Logic
             if 'clean_msgs' in admin_states.get(adm_id, {}):
                 for m_id in admin_states[adm_id]['clean_msgs']:
                     try: bot.delete_message(call.message.chat.id, m_id)
@@ -395,7 +414,7 @@ def admin_callbacks(call):
             admin_states[adm_id] = {}
             return
 
-        # 1. Admin Review
+        # 1. Admin Review (Added Name and Date Format)
         elif data.startswith("arev_"):
             target_tg_id = int(data.split("_")[1])
             conn = get_db_connection()
@@ -407,11 +426,16 @@ def admin_callbacks(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
             if not subs: return bot.send_message(call.message.chat.id, "No pending content.")
             for sub in subs:
+                # 🔴 Date Formatting added
+                dt = sub.get('created_at')
+                sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
+                caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
+                
                 markup = get_admin_instruction_keyboard(sub['id'])
                 if sub.get('media_type') == 'video':
-                    bot.send_video(call.message.chat.id, sub['photo_id'], caption=f"Fb Name: {sub['fb_name']}", reply_markup=markup)
+                    bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
                 else:
-                    bot.send_photo(call.message.chat.id, sub['photo_id'], caption=f"Fb Name: {sub['fb_name']}", reply_markup=markup)
+                    bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
 
         elif data.startswith("isel_"):
             parts = data.split("_")
@@ -427,14 +451,24 @@ def admin_callbacks(call):
             
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("SELECT telegram_id, content_type, photo_id, media_type FROM submissions WHERE id = %s", (sub_id,))
+            cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.id = %s", (sub_id,))
             sub_info = cursor.fetchone()
             if not sub_info: return
             
-            tg_id, c_type, photo_id, m_type = sub_info['telegram_id'], sub_info['content_type'], sub_info['photo_id'], sub_info.get('media_type', 'photo')
-            month_name = datetime.now().strftime("%B")
+            tg_id, c_type, photo_id, m_type, fb_name = sub_info['telegram_id'], sub_info['content_type'], sub_info['photo_id'], sub_info.get('media_type', 'photo'), sub_info['fb_name']
+            dt = sub_info.get('created_at')
+            sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
+            
+            month_name = get_bd_time().strftime("%B")
 
-            if sel == '❌': msg_text = "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন।"
+            if sel == '❌': 
+                msg_text = "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন।"
+                # 🔴 Cross Logic (Bring back Special Task option)
+                if c_type.startswith('Task-'):
+                    try:
+                        t_num = int(c_type.split('-')[1])
+                        cursor.execute("UPDATE user_task_status SET completed = FALSE WHERE telegram_id = %s AND task_num = %s", (tg_id, t_num))
+                    except: pass
             else:
                 cursor.execute("SELECT instruction_text FROM custom_instructions WHERE id = %s", (int(sel),))
                 msg_text = cursor.fetchone()['instruction_text']
@@ -442,6 +476,16 @@ def admin_callbacks(call):
                 cursor.execute("INSERT INTO task_records (telegram_id, month, general_post, special_post, task_done, task_total) VALUES (%s, %s, 0, 0, 0, 0) ON CONFLICT (telegram_id, month) DO NOTHING;", (tg_id, month_name))
                 if c_type == 'Special Post': cursor.execute("UPDATE task_records SET special_post = special_post + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
                 elif c_type.startswith('Task'): cursor.execute("UPDATE task_records SET task_done = task_done + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
+                
+                # 🔴 BKLn Braft Group Forwarding for Instruction 1
+                if str(sel) == '1' and (c_type == 'Special Post' or c_type.startswith('Task')):
+                    try:
+                        braft_cap = f"Name: {fb_name}\nDate: {sub_date}"
+                        if m_type == 'video':
+                            bot.send_video(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
+                        else:
+                            bot.send_photo(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
+                    except Exception as e: print(f"Group send error: {e}")
                 
             cursor.execute("UPDATE submissions SET status = 'Reviewed', assigned_instruction = %s WHERE id = %s", (msg_text, sub_id))
             conn.commit()
@@ -505,7 +549,6 @@ def admin_callbacks(call):
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            # 🔴 FIX 4: Overwrite Protection
             cursor.execute("SELECT COUNT(*) FROM active_assignments")
             if cursor.fetchone()['count'] > 0:
                 conn.close()
@@ -540,9 +583,9 @@ def admin_callbacks(call):
             seq_str = next((o['sequence'] for o in state['orgs'] if o['id'] == org_id), None)
             tasks = seq_str.split(',')
             teams = ['Team Electron', 'Team Proton', 'Team Neutron']
-            month_name = datetime.now().strftime("%B")
+            month_name = get_bd_time().strftime("%B")
             
-            now = datetime.now()
+            now = get_bd_time()
             tomorrow = now.date() + timedelta(days=1)
             next_midnight = datetime.combine(tomorrow, datetime.min.time())
             
@@ -607,7 +650,6 @@ def admin_callbacks(call):
             admin_states[adm_id]['wait_ti'] = {'t_num': t_num, 'msg_idx': msg_idx}
             bot.register_next_step_handler(msg, step_update_task_msg)
 
-        # 🔴 FIX 2: Task Delete System inside Edit Instructions
         elif data.startswith("ti_del_sel_"):
             t_num = int(data.split("_")[3])
             admin_states[adm_id]['del_task'] = t_num
@@ -622,7 +664,6 @@ def admin_callbacks(call):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("DELETE FROM tasks WHERE task_num = %s", (t_num,))
             
-            # Clean matching organized lists
             cursor.execute("SELECT id, sequence FROM organized_tasks")
             orgs = cursor.fetchall()
             for org in orgs:
@@ -852,7 +893,6 @@ def finalize_task(adm_id, chat_id, count):
     conn.commit()
     conn.close()
     
-    # Clean up chat feed!
     for m_id in state.get('clean_msgs', []):
         try: bot.delete_message(chat_id, m_id)
         except: pass
@@ -894,7 +934,7 @@ def auto_task_timer():
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("SELECT * FROM active_assignments")
             assignments = cursor.fetchall()
-            now = datetime.now()
+            now = get_bd_time()
             
             for assign in assignments:
                 team, t_num, msg_lvl, sched = assign['team_name'], assign['task_num'], assign['current_msg'], assign['scheduled_for']
