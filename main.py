@@ -84,6 +84,7 @@ def init_db():
             "ALTER TABLE tasks ADD COLUMN msg_3 TEXT;",
             "ALTER TABLE tasks ADD CONSTRAINT unique_task_num UNIQUE(task_num);",
             "ALTER TABLE submissions ADD COLUMN media_type TEXT DEFAULT 'photo';",
+            "ALTER TABLE submissions ADD COLUMN caption TEXT;",
             "ALTER TABLE active_assignments ADD COLUMN scheduled_for TIMESTAMP;",
             "ALTER TABLE active_assignments ADD COLUMN is_started BOOLEAN DEFAULT FALSE;"
         ]
@@ -160,6 +161,7 @@ def handle_media_submission(message):
     
     media_type = message.content_type
     file_id = message.photo[-1].file_id if media_type == 'photo' else message.video.file_id
+    caption = message.caption if message.caption else ""
     
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -175,7 +177,7 @@ def handle_media_submission(message):
     conn.close()
 
     if tg_id not in user_photo_states: user_photo_states[tg_id] = {}
-    user_photo_states[tg_id][msg_id] = {'file_id': file_id, 'media_type': media_type}
+    user_photo_states[tg_id][msg_id] = {'file_id': file_id, 'media_type': media_type, 'caption': caption}
     
     markup = InlineKeyboardMarkup(row_width=2)
     if active_task and not task_completed:
@@ -244,18 +246,19 @@ def handle_user_submission_clicks(call):
         cursor = conn.cursor()
         month_name = get_bd_time().strftime("%B")
         m_type = state.get('media_type', 'photo')
+        caption_text = state.get('caption', '')
         
         if sel_type == 'General Post':
-            cursor.execute("INSERT INTO submissions (telegram_id, content_type, photo_id, media_type, status) VALUES (%s, %s, %s, %s, 'Direct')", (tg_id, sel_type, state.get('file_id'), m_type))
+            cursor.execute("INSERT INTO submissions (telegram_id, content_type, photo_id, media_type, status, caption) VALUES (%s, %s, %s, %s, 'Direct', %s)", (tg_id, sel_type, state.get('file_id'), m_type, caption_text))
             cursor.execute("INSERT INTO task_records (telegram_id, month, general_post, special_post, task_done, task_total) VALUES (%s, %s, 1, 0, 0, 0) ON CONFLICT (telegram_id, month) DO UPDATE SET general_post = task_records.general_post + 1", (tg_id, month_name))
             msg = "Your General Post has been successfully submitted and counted!✅"
         elif sel_type == 'Task':
             t_num = state.get('active_task_num')
-            cursor.execute("INSERT INTO submissions (telegram_id, content_type, photo_id, media_type) VALUES (%s, %s, %s, %s)", (tg_id, f"Task-{t_num}", state.get('file_id'), m_type))
+            cursor.execute("INSERT INTO submissions (telegram_id, content_type, photo_id, media_type, caption) VALUES (%s, %s, %s, %s, %s)", (tg_id, f"Task-{t_num}", state.get('file_id'), m_type, caption_text))
             cursor.execute("INSERT INTO user_task_status (telegram_id, task_num, completed) VALUES (%s, %s, TRUE) ON CONFLICT (telegram_id, task_num) DO UPDATE SET completed = TRUE", (tg_id, t_num))
             msg = "Your task has been successfully submitted✅\nPlease wait for further instructions."
         else:
-            cursor.execute("INSERT INTO submissions (telegram_id, content_type, special_category, photo_id, media_type) VALUES (%s, %s, %s, %s, %s)", (tg_id, sel_type, state.get('special_cat'), state.get('file_id'), m_type))
+            cursor.execute("INSERT INTO submissions (telegram_id, content_type, special_category, photo_id, media_type, caption) VALUES (%s, %s, %s, %s, %s, %s)", (tg_id, sel_type, state.get('special_cat'), state.get('file_id'), m_type, caption_text))
             msg = "Your meme has been successfully submitted. Please wait for further instructions!"
             
         conn.commit()
@@ -338,26 +341,21 @@ def handle_my_task_status(message):
 @bot.message_handler(func=lambda msg: msg.text == "Pending Content")
 def handle_pending_content(message):
     tg_id = message.from_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
     if str(tg_id) == ADMIN_CHAT_ID:
-        cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.status = 'Pending' GROUP BY s.telegram_id, m.fb_name")
-        records = cursor.fetchall()
-        if not records:
-            bot.send_message(message.chat.id, "No Pending Content found!")
-            return
-        markup = InlineKeyboardMarkup(row_width=1)
-        for r in records: markup.add(InlineKeyboardButton(f"{r['fb_name']} | Total Count: {r['total']}", callback_data=f"arev_{r['telegram_id']}"))
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(InlineKeyboardButton("Special Post", callback_data="pend_sp"), InlineKeyboardButton("Special Task", callback_data="pend_task"))
         markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
-        bot.send_message(message.chat.id, "Pending List:", reply_markup=markup)
+        bot.send_message(message.chat.id, "Select Content Type to Review:", reply_markup=markup)
     else:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("SELECT photo_id, media_type FROM submissions WHERE telegram_id = %s AND status = 'Pending'", (tg_id,))
         subs = cursor.fetchall()
+        conn.close()
         if not subs: bot.send_message(message.chat.id, "No Pending content available!")
         for sub in subs:
             if sub['media_type'] == 'video': bot.send_video(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
             else: bot.send_photo(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
-    conn.close()
 
 # 📌 ADMIN: Menus & Logics
 @bot.message_handler(func=lambda msg: msg.text == "Task Assign")
@@ -406,7 +404,7 @@ def handle_reset_task_data(message):
     bot.send_message(message.chat.id, "Are you sure you want to reset all Task Data?", reply_markup=markup)
 
 # 📌 ADMIN: Callbacks
-@bot.callback_query_handler(func=lambda call: call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_") or call.data == "reset_task_yes")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_") or call.data == "reset_task_yes" or call.data.startswith("pend_"))
 def admin_callbacks(call):
     adm_id = call.from_user.id
     if str(adm_id) != ADMIN_CHAT_ID: return
@@ -427,24 +425,63 @@ def admin_callbacks(call):
             admin_states[adm_id] = {}
             return
 
-        # 🔴 Updated: Deletes EVERYTHING for all users
         elif data == "reset_task_yes":
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM user_task_status")
             cursor.execute("DELETE FROM active_assignments")
-            cursor.execute("DELETE FROM submissions") # Vanishes ALL submissions
-            cursor.execute("DELETE FROM task_records") # Resets ALL counts (General, Special, Task)
+            cursor.execute("DELETE FROM submissions")
+            cursor.execute("DELETE FROM task_records")
             conn.commit()
             conn.close()
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "All Data (Task, General Post, Special Post) has been permanently reset!✅\nUser profiles are completely fresh (00).")
 
-        elif data.startswith("arev_"):
-            target_tg_id = int(data.split("_")[1])
+        # --- NEW PENDING SPLIT LOGIC ---
+        elif data in ["pend_sp", "pend_task"]:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending'", (target_tg_id,))
+            
+            if data == "pend_sp":
+                c_label = "sp"
+                cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.status = 'Pending' AND s.content_type = 'Special Post' GROUP BY s.telegram_id, m.fb_name")
+            else:
+                c_label = "tk"
+                cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.status = 'Pending' AND s.content_type LIKE 'Task-%%' GROUP BY s.telegram_id, m.fb_name")
+                
+            records = cursor.fetchall()
+            conn.close()
+            
+            if not records:
+                return bot.edit_message_text("No Pending Content found for this category!", call.message.chat.id, call.message.message_id, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("Back", callback_data="pend_back")))
+                
+            markup = InlineKeyboardMarkup(row_width=1)
+            for r in records: 
+                markup.add(InlineKeyboardButton(f"{r['fb_name']} | Total Count: {r['total']}", callback_data=f"arev_{r['telegram_id']}_{c_label}"))
+            markup.add(InlineKeyboardButton("Back", callback_data="pend_back"), InlineKeyboardButton("Cancel", callback_data="acanc"))
+            bot.edit_message_text("Pending List:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+            
+        elif data == "pend_back":
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(InlineKeyboardButton("Special Post", callback_data="pend_sp"), InlineKeyboardButton("Special Task", callback_data="pend_task"))
+            markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
+            bot.edit_message_text("Select Content Type to Review:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+        elif data.startswith("arev_"):
+            parts = data.split("_")
+            target_tg_id = int(parts[1])
+            c_label = parts[2] if len(parts) > 2 else "all"
+            
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            if c_label == "sp":
+                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending' AND s.content_type = 'Special Post'", (target_tg_id,))
+            elif c_label == "tk":
+                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending' AND s.content_type LIKE 'Task-%%'", (target_tg_id,))
+            else:
+                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending'", (target_tg_id,))
+                
             subs = cursor.fetchall()
             conn.close()
             
@@ -454,6 +491,7 @@ def admin_callbacks(call):
                 dt = sub.get('created_at')
                 sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
                 
+                # Admin View always shows standard Name & Date format!
                 caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
                 if sub['content_type'].startswith('Task-'):
                     caption_text += "\n⭐Special Task"
@@ -488,7 +526,6 @@ def admin_callbacks(call):
             
             month_name = get_bd_time().strftime("%B")
 
-            # 🔴 Updated: Rejected status for ❌
             if sel == '❌': 
                 msg_text = "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন।"
                 if c_type.startswith('Task-'):
@@ -507,7 +544,10 @@ def admin_callbacks(call):
                 
                 if str(sel) == '1' and (c_type == 'Special Post' or c_type.startswith('Task')):
                     try:
-                        braft_cap = f"Name: {fb_name}\nDate: {sub_date}"
+                        # --- CAPTION LOGIC ONLY FOR THE GROUP FORWARD ---
+                        braft_cap = sub_info.get('caption')
+                        braft_cap = braft_cap if (braft_cap and braft_cap.strip()) else None
+                        
                         if m_type == 'video':
                             bot.send_video(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
                         else:
