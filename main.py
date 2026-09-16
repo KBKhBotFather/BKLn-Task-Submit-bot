@@ -41,7 +41,8 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 id SERIAL PRIMARY KEY, telegram_id BIGINT, content_type TEXT, special_category TEXT, 
-                photo_id TEXT, media_type TEXT DEFAULT 'photo', status TEXT DEFAULT 'Pending', assigned_instruction TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                photo_id TEXT, media_type TEXT DEFAULT 'photo', status TEXT DEFAULT 'Pending', assigned_instruction TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                caption TEXT, assigned_grader BIGINT
             );
             CREATE TABLE IF NOT EXISTS tasks (
                 id SERIAL PRIMARY KEY, task_num INT, msg_1 TEXT, msg_2 TEXT, msg_3 TEXT
@@ -62,7 +63,10 @@ def init_db():
             CREATE TABLE IF NOT EXISTS task_records (
                 id SERIAL PRIMARY KEY, telegram_id BIGINT, month TEXT, 
                 general_post INT DEFAULT 0, special_post INT DEFAULT 0, 
-                task_done INT DEFAULT 0, task_total INT DEFAULT 0, UNIQUE(telegram_id, month)
+                task_done INT DEFAULT 0, task_total INT DEFAULT 0, special_mark INT DEFAULT 0, UNIQUE(telegram_id, month)
+            );
+            CREATE TABLE IF NOT EXISTS grading_moderators (
+                telegram_id BIGINT PRIMARY KEY, resign_count INT DEFAULT 0, is_active BOOLEAN DEFAULT TRUE
             );
         """)
         
@@ -85,8 +89,10 @@ def init_db():
             "ALTER TABLE tasks ADD CONSTRAINT unique_task_num UNIQUE(task_num);",
             "ALTER TABLE submissions ADD COLUMN media_type TEXT DEFAULT 'photo';",
             "ALTER TABLE submissions ADD COLUMN caption TEXT;",
+            "ALTER TABLE submissions ADD COLUMN assigned_grader BIGINT;",
             "ALTER TABLE active_assignments ADD COLUMN scheduled_for TIMESTAMP;",
-            "ALTER TABLE active_assignments ADD COLUMN is_started BOOLEAN DEFAULT FALSE;"
+            "ALTER TABLE active_assignments ADD COLUMN is_started BOOLEAN DEFAULT FALSE;",
+            "ALTER TABLE task_records ADD COLUMN special_mark INT DEFAULT 0;"
         ]
         for query in upgrade_queries:
             try: cursor.execute(query)
@@ -101,6 +107,7 @@ def init_db():
 init_db()
 user_photo_states = {} 
 admin_states = {}
+moderator_states = {}
 
 def get_member_info(tg_id):
     try:
@@ -111,6 +118,21 @@ def get_member_info(tg_id):
         conn.close()
         return user
     except Exception: return None
+
+def get_least_loaded_moderator():
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("""
+        SELECT m.telegram_id, COUNT(s.id) as pending_count 
+        FROM grading_moderators m 
+        LEFT JOIN submissions s ON m.telegram_id = s.assigned_grader AND s.status = 'Grading' 
+        WHERE m.is_active = TRUE 
+        GROUP BY m.telegram_id 
+        ORDER BY pending_count ASC, m.telegram_id ASC LIMIT 1
+    """)
+    mod = cursor.fetchone()
+    conn.close()
+    return mod['telegram_id'] if mod else None
 
 # 📱 Keyboards
 def member_main_menu():
@@ -126,6 +148,11 @@ def admin_main_menu():
     markup.add(KeyboardButton("Triggered Task"))
     return markup
 
+def moderator_main_menu():
+    markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(KeyboardButton("Pending Content"), KeyboardButton("Resignation ⚠️"))
+    return markup
+
 # 📌 Core Commands
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -133,22 +160,205 @@ def send_welcome(message):
     if str(tg_id) == ADMIN_CHAT_ID:
         bot.send_message(message.chat.id, "Welcome Admin to Control Panel!", reply_markup=admin_main_menu())
         return
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    conn.close()
+    if mod and mod[0]:
+        bot.send_message(message.chat.id, "Welcome back to Moderator Panel!", reply_markup=moderator_main_menu())
+        return
+
     user = get_member_info(tg_id)
     if not user:
         bot.send_message(message.chat.id, "You are not registered yet❌\nPlease register first.", reply_markup=ReplyKeyboardRemove())
         return
     bot.send_message(message.chat.id, "Welcome to KBKh Bot Ecosystem!\nYou can submit tasks directly here...", reply_markup=member_main_menu())
 
-@bot.message_handler(commands=['start_task_now'])
-def force_start_task(message):
-    if str(message.from_user.id) != ADMIN_CHAT_ID: return
+# 📌 Moderator Key Login
+@bot.message_handler(func=lambda msg: msg.text and msg.text.startswith("BKLnKEY22"))
+def handle_moderator_login(message):
+    tg_id = message.from_user.id
+    code = message.text.strip()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT resign_count FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    
+    expected_suffix = ""
+    if mod and mod['resign_count'] > 0:
+        expected_suffix = str(mod['resign_count'])
+        
+    if code == f"BKLnKEY22{expected_suffix}":
+        cursor.execute("INSERT INTO grading_moderators (telegram_id, is_active) VALUES (%s, TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_active = TRUE", (tg_id,))
+        conn.commit()
+        bot.send_message(message.chat.id, "Welcome sir!\nYou are now in a sector of the Admin panel.", reply_markup=moderator_main_menu())
+    else:
+        bot.send_message(message.chat.id, "Invalid Key! Please provide the correct key.")
+    conn.close()
+
+# 📌 MODERATOR: Resignation
+@bot.message_handler(func=lambda msg: msg.text == "Resignation ⚠️")
+def handle_resignation(message):
+    tg_id = message.from_user.id
     conn = get_db_connection()
     cursor = conn.cursor()
-    now = get_bd_time()
-    cursor.execute("UPDATE active_assignments SET scheduled_for = %s WHERE is_started = FALSE", (now,))
+    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    conn.close()
+    
+    if not mod or not mod[0]: return
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("Yes", callback_data="res_yes"), InlineKeyboardButton("No", callback_data="res_no"))
+    bot.send_message(message.chat.id, "⚠️Are you sure you want to resign?", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data in ["res_yes", "res_no"])
+def resignation_callback(call):
+    tg_id = call.from_user.id
+    try: bot.answer_callback_query(call.id)
+    except: pass
+    
+    if call.data == "res_no":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        return
+        
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cursor.execute("UPDATE grading_moderators SET is_active = FALSE, resign_count = resign_count + 1 WHERE telegram_id = %s", (tg_id,))
+    
+    # Re-distribute pending items
+    cursor.execute("SELECT id FROM submissions WHERE assigned_grader = %s AND status = 'Grading'", (tg_id,))
+    pending_items = cursor.fetchall()
+    
+    for item in pending_items:
+        new_mod = get_least_loaded_moderator()
+        if new_mod:
+            cursor.execute("UPDATE submissions SET assigned_grader = %s WHERE id = %s", (new_mod, item['id']))
+            
     conn.commit()
     conn.close()
-    bot.send_message(message.chat.id, "All pending tasks have been fast-forwarded to START NOW!🟢\n(Wait up to 1 minute for messages to arrive)")
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    bot.send_message(call.message.chat.id, "You have successfully resigned!✅", reply_markup=member_main_menu())
+
+# 📌 MODERATOR: Pending Content (Grading)
+@bot.message_handler(func=lambda msg: msg.text == "Pending Content")
+def handle_moderator_pending(message):
+    tg_id = message.from_user.id
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    conn.close()
+    
+    if str(tg_id) == ADMIN_CHAT_ID:
+        # Admin menu logic remains identical
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(InlineKeyboardButton("Special Post", callback_data="pend_sp"), InlineKeyboardButton("Special Task", callback_data="pend_task"))
+        markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
+        bot.send_message(message.chat.id, "Select Content Type to Review:", reply_markup=markup)
+        
+    elif mod and mod[0]:
+        # Moderator Grading List
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.assigned_grader = %s AND s.status = 'Grading' GROUP BY s.telegram_id, m.fb_name", (tg_id,))
+        records = cursor.fetchall()
+        conn.close()
+        
+        if not records:
+            return bot.send_message(message.chat.id, "No Pending Content found!")
+        markup = InlineKeyboardMarkup(row_width=1)
+        for r in records: markup.add(InlineKeyboardButton(f"{r['fb_name']} | Total Count: {r['total']}", callback_data=f"modrev_{r['telegram_id']}"))
+        bot.send_message(message.chat.id, "Pending List:", reply_markup=markup)
+        
+    else:
+        # Normal User Logic
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT photo_id, media_type FROM submissions WHERE telegram_id = %s AND status = 'Pending'", (tg_id,))
+        subs = cursor.fetchall()
+        conn.close()
+        if not subs: bot.send_message(message.chat.id, "No Pending content available!")
+        for sub in subs:
+            if sub['media_type'] == 'video': bot.send_video(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
+            else: bot.send_photo(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("modrev_") or call.data.startswith("msel_") or call.data.startswith("msub_") or call.data == "mcanc")
+def moderator_grading_callbacks(call):
+    tg_id = call.from_user.id
+    data = call.data
+    try: bot.answer_callback_query(call.id)
+    except: pass
+    
+    if tg_id not in moderator_states: moderator_states[tg_id] = {}
+
+    if data == "mcanc":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        return
+
+    elif data.startswith("modrev_"):
+        target_tg_id = int(data.split("_")[1])
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.assigned_grader = %s AND s.telegram_id = %s AND s.status = 'Grading'", (tg_id, target_tg_id))
+        subs = cursor.fetchall()
+        conn.close()
+        
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        if not subs: return bot.send_message(call.message.chat.id, "No pending content.")
+        
+        for sub in subs:
+            dt = sub.get('created_at')
+            sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
+            
+            caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
+            markup = get_moderator_grading_keyboard(sub['id'])
+            
+            if sub.get('media_type') == 'video':
+                bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+            else:
+                bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+
+    elif data.startswith("msel_"):
+        parts = data.split("_")
+        sub_id, mark = int(parts[1]), parts[2]
+        if 'grade' not in moderator_states[tg_id]: moderator_states[tg_id]['grade'] = {}
+        moderator_states[tg_id]['grade'][sub_id] = mark
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_moderator_grading_keyboard(sub_id, mark))
+
+    elif data.startswith("msub_"):
+        sub_id = int(data.split("_")[1])
+        mark = moderator_states[tg_id].get('grade', {}).get(sub_id)
+        if not mark: return bot.send_message(call.message.chat.id, "Select a mark first!")
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT telegram_id, created_at FROM submissions WHERE id = %s", (sub_id,))
+        sub_info = cursor.fetchone()
+        
+        if sub_info:
+            submitter_tg_id = sub_info['telegram_id']
+            submit_month = (sub_info['created_at'] + timedelta(hours=6)).strftime("%B")
+            
+            cursor.execute("UPDATE submissions SET status = 'Graded' WHERE id = %s", (sub_id,))
+            cursor.execute("UPDATE task_records SET special_mark = special_mark + %s WHERE telegram_id = %s AND month = %s", (int(mark), submitter_tg_id, submit_month))
+            conn.commit()
+            
+        conn.close()
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+
+def get_moderator_grading_keyboard(sub_id, selected=None):
+    markup = InlineKeyboardMarkup(row_width=6)
+    labels = ['1', '2', '3', '4', '5', '6']
+    btns = [InlineKeyboardButton(f"{l}✅" if str(l) == str(selected) else l, callback_data=f"msel_{sub_id}_{l}") for l in labels]
+    markup.add(*btns)
+    markup.row(InlineKeyboardButton("Submit", callback_data=f"msub_{sub_id}"), InlineKeyboardButton("Cancel", callback_data="mcanc"))
+    return markup
+
 
 # 📌 USER: Submissions (Photos & Videos)
 @bot.message_handler(content_types=['photo', 'video'])
@@ -156,6 +366,14 @@ def handle_media_submission(message):
     tg_id = message.from_user.id
     msg_id = message.message_id
     if str(tg_id) == ADMIN_CHAT_ID: return 
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    conn.close()
+    if mod and mod[0]: return 
+    
     user = get_member_info(tg_id)
     if not user: return
     
@@ -267,7 +485,6 @@ def handle_user_submission_clicks(call):
         bot.send_message(call.message.chat.id, msg)
         user_photo_states[tg_id].pop(msg_id, None)
 
-# 📌 USER: Additional Menus
 @bot.message_handler(func=lambda msg: msg.text == "Task")
 def handle_task_display(message):
     tg_id = message.from_user.id
@@ -330,32 +547,14 @@ def handle_my_task_status(message):
     spc = rec['special_post'] if rec else 0
     tdone = rec['task_done'] if rec else 0
     ttot = rec['task_total'] if rec else 0
+    s_mark = rec['special_mark'] if rec else 0
     
     text = (f"🗂️Your Task status for {month_name}\n"
             f"General Post - {gen}\n"
             f"Special Post - {spc}\n"
             f"Special Task - {tdone}/{ttot}\n"
-            f"Special Mark - 0")
+            f"Special Mark - {s_mark}")
     bot.send_message(message.chat.id, text)
-
-@bot.message_handler(func=lambda msg: msg.text == "Pending Content")
-def handle_pending_content(message):
-    tg_id = message.from_user.id
-    if str(tg_id) == ADMIN_CHAT_ID:
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(InlineKeyboardButton("Special Post", callback_data="pend_sp"), InlineKeyboardButton("Special Task", callback_data="pend_task"))
-        markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
-        bot.send_message(message.chat.id, "Select Content Type to Review:", reply_markup=markup)
-    else:
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT photo_id, media_type FROM submissions WHERE telegram_id = %s AND status = 'Pending'", (tg_id,))
-        subs = cursor.fetchall()
-        conn.close()
-        if not subs: bot.send_message(message.chat.id, "No Pending content available!")
-        for sub in subs:
-            if sub['media_type'] == 'video': bot.send_video(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
-            else: bot.send_photo(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
 
 # 📌 ADMIN: Menus & Logics
 @bot.message_handler(func=lambda msg: msg.text == "Task Assign")
@@ -437,7 +636,6 @@ def admin_callbacks(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "All Data (Task, General Post, Special Post) has been permanently reset!✅\nUser profiles are completely fresh (00).")
 
-        # --- NEW PENDING SPLIT LOGIC ---
         elif data in ["pend_sp", "pend_task"]:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -491,7 +689,6 @@ def admin_callbacks(call):
                 dt = sub.get('created_at')
                 sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
                 
-                # Admin View always shows standard Name & Date format!
                 caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
                 if sub['content_type'].startswith('Task-'):
                     caption_text += "\n⭐Special Task"
@@ -534,6 +731,7 @@ def admin_callbacks(call):
                         cursor.execute("UPDATE user_task_status SET completed = FALSE WHERE telegram_id = %s AND task_num = %s", (tg_id, t_num))
                     except: pass
                 status_val = 'Rejected'
+                assigned_grader = None
             else:
                 cursor.execute("SELECT instruction_text FROM custom_instructions WHERE id = %s", (int(sel),))
                 msg_text = cursor.fetchone()['instruction_text']
@@ -544,18 +742,18 @@ def admin_callbacks(call):
                 
                 if str(sel) == '1' and (c_type == 'Special Post' or c_type.startswith('Task')):
                     try:
-                        # --- CAPTION LOGIC ONLY FOR THE GROUP FORWARD ---
                         braft_cap = sub_info.get('caption')
                         braft_cap = braft_cap if (braft_cap and braft_cap.strip()) else None
                         
-                        if m_type == 'video':
-                            bot.send_video(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
-                        else:
-                            bot.send_photo(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
+                        if m_type == 'video': bot.send_video(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
+                        else: bot.send_photo(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
                     except Exception as e: print(f"Group send error: {e}")
-                status_val = 'Reviewed'
                 
-            cursor.execute("UPDATE submissions SET status = %s, assigned_instruction = %s WHERE id = %s", (status_val, msg_text, sub_id))
+                # 📌 New Phase: Send to Grading Moderator
+                assigned_grader = get_least_loaded_moderator()
+                status_val = 'Grading' if assigned_grader else 'Reviewed'
+                
+            cursor.execute("UPDATE submissions SET status = %s, assigned_instruction = %s, assigned_grader = %s WHERE id = %s", (status_val, msg_text, assigned_grader, sub_id))
             conn.commit()
             conn.close()
             
@@ -564,7 +762,7 @@ def admin_callbacks(call):
                 if m_type == 'video': bot.send_video(tg_id, photo_id, caption=f"Instruction:\n{msg_text}")
                 else: bot.send_photo(tg_id, photo_id, caption=f"Instruction:\n{msg_text}")
             except: pass
-            bot.send_message(call.message.chat.id, "Instruction Sent & Count Updated!✅")
+            bot.send_message(call.message.chat.id, "Instruction Sent & Sent for Grading!✅" if assigned_grader else "Instruction Sent & Count Updated!✅")
             
         elif data == "ta_add":
             conn = get_db_connection()
@@ -702,7 +900,6 @@ def admin_callbacks(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "Task Successfully end!✅")
 
-        # 3. Edit Instructions Menu
         elif data == "ei_task":
             markup = get_task_edit_keyboard(adm_id)
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -763,7 +960,6 @@ def admin_callbacks(call):
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
             bot.answer_callback_query(call.id, "Task Deleted Successfully!", show_alert=True)
 
-        # 4. Main Instructions Menu
         elif data == "ei_main":
             markup, text = get_main_inst_keyboard(adm_id)
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -1044,7 +1240,7 @@ def auto_task_timer():
                     JOIN members m ON s.telegram_id = m.telegram_id 
                     WHERE m.team_name = %s 
                       AND s.content_type = %s 
-                      AND s.status = 'Reviewed'
+                      AND s.status IN ('Reviewed', 'Grading', 'Graded')
                 """, (team, f"Task-{t_num}"))
                 done_members = cursor.fetchone()['count']
                 
@@ -1091,7 +1287,7 @@ if __name__ == "__main__":
     t_timer.daemon = True
     t_timer.start()
     
-    print("🤖 BKLn Task Submit Bot is Active...")
+    print("🤖 BKLn Task Submit Bot is Active with Moderator Panel...")
     while True:
         try:
             bot.remove_webhook()
