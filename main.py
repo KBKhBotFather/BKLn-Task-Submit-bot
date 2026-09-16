@@ -272,11 +272,24 @@ def handle_task_display(message):
     if not user: return
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    # 🔴 FIXED GLITCH: Checking team task AND global active tasks
     cursor.execute("SELECT task_num, current_msg FROM active_assignments WHERE team_name = %s AND is_started = TRUE", (user['team_name'],))
     assign = cursor.fetchone()
     
     if not assign: 
-        bot.send_message(message.chat.id, "No Task Available at this moment!")
+        # Check if there is ANY task running globally
+        cursor.execute("SELECT COUNT(*) FROM active_assignments WHERE is_started = TRUE")
+        global_active = cursor.fetchone()['count']
+        
+        # Check if user has recently completed a task
+        cursor.execute("SELECT completed FROM user_task_status WHERE telegram_id = %s ORDER BY task_num DESC LIMIT 1", (tg_id,))
+        recent_uts = cursor.fetchone()
+        
+        if global_active > 0 and recent_uts and recent_uts['completed']:
+            bot.send_message(message.chat.id, "You have successfully completed the Task!✅")
+        else:
+            bot.send_message(message.chat.id, "No Task Available at this moment!")
     else:
         cursor.execute("SELECT completed FROM user_task_status WHERE telegram_id = %s AND task_num = %s", (tg_id, assign['task_num']))
         uts = cursor.fetchone()
@@ -604,19 +617,14 @@ def admin_callbacks(call):
             
             conn = get_db_connection()
             cursor = conn.cursor()
-            
-            # 🔥 ডেটা গুলিয়ে ফেলার ১০০% স্থায়ী সমাধান 🔥
             for i, t_num in enumerate(tasks):
                 if i < len(teams):
                     cursor.execute("DELETE FROM active_assignments WHERE team_name = %s", (teams[i],))
                     cursor.execute("DELETE FROM user_task_status WHERE task_num = %s AND telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s)", (t_num, teams[i]))
-                    
-                    # নতুন ফিক্স: যখনই নতুন করে কোনো টাস্ক দেওয়া হবে, বট ওই নির্দিষ্ট টাস্কের আগের সব ছবি/মেমোরি মুছে ফেলবে। ফলে নতুন ছবির সাথে আগের ছবি কোনোভাবেই মিক্স হবে না!
                     cursor.execute("DELETE FROM submissions WHERE content_type = %s AND telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s)", (f"Task-{t_num}", teams[i]))
                     
                     cursor.execute("INSERT INTO active_assignments (team_name, task_num, scheduled_for, is_started, current_msg) VALUES (%s, %s, %s, FALSE, 0)", (teams[i], t_num, next_midnight))
                     cursor.execute("INSERT INTO task_records (telegram_id, month, task_total) SELECT telegram_id, %s, 1 FROM members WHERE team_name = %s ON CONFLICT (telegram_id, month) DO UPDATE SET task_total = task_records.task_total + 1", (month_name, teams[i]))
-            
             conn.commit()
             conn.close()
             
@@ -999,8 +1007,8 @@ def auto_task_timer():
                 """, (team, f"Task-{t_num}"))
                 done_members = cursor.fetchone()['count']
                 
-                # If there are members and ALL of them are reviewed, remove from Triggered Tasks
-                if total_members > 0 and done_members >= total_members:
+                # 🔴 FIXED: if members are 0, OR all members are reviewed, clear it instantly!
+                if total_members == 0 or done_members >= total_members:
                     cursor.execute("DELETE FROM active_assignments WHERE id = %s", (assign['id'],))
                     continue
 
