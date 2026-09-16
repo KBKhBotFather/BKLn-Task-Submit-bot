@@ -121,7 +121,7 @@ def member_main_menu():
 def admin_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(KeyboardButton("Pending Content"), KeyboardButton("Task Assign"))
-    markup.add(KeyboardButton("Reset Task Data"), KeyboardButton("Edit Instructions")) # 🔴 Changed Button here
+    markup.add(KeyboardButton("Reset Task Data"), KeyboardButton("Edit Instructions"))
     markup.add(KeyboardButton("Triggered Task"))
     return markup
 
@@ -388,7 +388,6 @@ def triggered_task_menu(message):
     markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
-# 🔴 NEW FEATURE: Reset Task Data Menu
 @bot.message_handler(func=lambda msg: msg.text == "Reset Task Data")
 def handle_reset_task_data(message):
     if str(message.from_user.id) != ADMIN_CHAT_ID: return
@@ -418,7 +417,6 @@ def admin_callbacks(call):
             admin_states[adm_id] = {}
             return
 
-        # 🔴 NEW FEATURE: Execution of Reset Task Data
         elif data == "reset_task_yes":
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -606,13 +604,19 @@ def admin_callbacks(call):
             
             conn = get_db_connection()
             cursor = conn.cursor()
+            
+            # 🔥 ডেটা গুলিয়ে ফেলার ১০০% স্থায়ী সমাধান 🔥
             for i, t_num in enumerate(tasks):
                 if i < len(teams):
                     cursor.execute("DELETE FROM active_assignments WHERE team_name = %s", (teams[i],))
                     cursor.execute("DELETE FROM user_task_status WHERE task_num = %s AND telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s)", (t_num, teams[i]))
                     
+                    # নতুন ফিক্স: যখনই নতুন করে কোনো টাস্ক দেওয়া হবে, বট ওই নির্দিষ্ট টাস্কের আগের সব ছবি/মেমোরি মুছে ফেলবে। ফলে নতুন ছবির সাথে আগের ছবি কোনোভাবেই মিক্স হবে না!
+                    cursor.execute("DELETE FROM submissions WHERE content_type = %s AND telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s)", (f"Task-{t_num}", teams[i]))
+                    
                     cursor.execute("INSERT INTO active_assignments (team_name, task_num, scheduled_for, is_started, current_msg) VALUES (%s, %s, %s, FALSE, 0)", (teams[i], t_num, next_midnight))
                     cursor.execute("INSERT INTO task_records (telegram_id, month, task_total) SELECT telegram_id, %s, 1 FROM members WHERE team_name = %s ON CONFLICT (telegram_id, month) DO UPDATE SET task_total = task_records.task_total + 1", (month_name, teams[i]))
+            
             conn.commit()
             conn.close()
             
@@ -956,7 +960,7 @@ def step_org_task(message):
     conn.commit()
     conn.close()
 
-# ⏰ Background Auto-Timer (Fixed: Won't vanish if team has 0 members)
+# ⏰ Background Auto-Timer
 def auto_task_timer():
     while True:
         try:
@@ -985,7 +989,6 @@ def auto_task_timer():
                 cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
                 total_members = cursor.fetchone()['count']
                 
-                # 🔴 CRITICAL FIX: Ensures 0 member team won't auto-delete and only counts "Reviewed" submissions
                 cursor.execute("""
                     SELECT COUNT(DISTINCT s.telegram_id) 
                     FROM submissions s 
