@@ -273,16 +273,13 @@ def handle_task_display(message):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     
-    # 🔴 FIXED GLITCH: Checking team task AND global active tasks
     cursor.execute("SELECT task_num, current_msg FROM active_assignments WHERE team_name = %s AND is_started = TRUE", (user['team_name'],))
     assign = cursor.fetchone()
     
     if not assign: 
-        # Check if there is ANY task running globally
         cursor.execute("SELECT COUNT(*) FROM active_assignments WHERE is_started = TRUE")
         global_active = cursor.fetchone()['count']
         
-        # Check if user has recently completed a task
         cursor.execute("SELECT completed FROM user_task_status WHERE telegram_id = %s ORDER BY task_num DESC LIMIT 1", (tg_id,))
         recent_uts = cursor.fetchone()
         
@@ -430,17 +427,18 @@ def admin_callbacks(call):
             admin_states[adm_id] = {}
             return
 
+        # 🔴 Updated: Deletes EVERYTHING for all users
         elif data == "reset_task_yes":
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM user_task_status")
             cursor.execute("DELETE FROM active_assignments")
-            cursor.execute("DELETE FROM submissions WHERE content_type LIKE 'Task-%'")
-            cursor.execute("UPDATE task_records SET task_done = 0, task_total = 0")
+            cursor.execute("DELETE FROM submissions") # Vanishes ALL submissions
+            cursor.execute("DELETE FROM task_records") # Resets ALL counts (General, Special, Task)
             conn.commit()
             conn.close()
             bot.delete_message(call.message.chat.id, call.message.message_id)
-            bot.send_message(call.message.chat.id, "All Task Data has been permanently reset!✅\nUser profiles are completely fresh.")
+            bot.send_message(call.message.chat.id, "All Data (Task, General Post, Special Post) has been permanently reset!✅\nUser profiles are completely fresh (00).")
 
         elif data.startswith("arev_"):
             target_tg_id = int(data.split("_")[1])
@@ -490,6 +488,7 @@ def admin_callbacks(call):
             
             month_name = get_bd_time().strftime("%B")
 
+            # 🔴 Updated: Rejected status for ❌
             if sel == '❌': 
                 msg_text = "মিমটি পোস্টযোগ্য নয়। প্রয়োজনে যেকোনো সিনিয়র সদস্যের সাথে যোগাযোগ করুন।"
                 if c_type.startswith('Task-'):
@@ -497,6 +496,7 @@ def admin_callbacks(call):
                         t_num = int(c_type.split('-')[1])
                         cursor.execute("UPDATE user_task_status SET completed = FALSE WHERE telegram_id = %s AND task_num = %s", (tg_id, t_num))
                     except: pass
+                status_val = 'Rejected'
             else:
                 cursor.execute("SELECT instruction_text FROM custom_instructions WHERE id = %s", (int(sel),))
                 msg_text = cursor.fetchone()['instruction_text']
@@ -513,8 +513,9 @@ def admin_callbacks(call):
                         else:
                             bot.send_photo(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
                     except Exception as e: print(f"Group send error: {e}")
+                status_val = 'Reviewed'
                 
-            cursor.execute("UPDATE submissions SET status = 'Reviewed', assigned_instruction = %s WHERE id = %s", (msg_text, sub_id))
+            cursor.execute("UPDATE submissions SET status = %s, assigned_instruction = %s WHERE id = %s", (status_val, msg_text, sub_id))
             conn.commit()
             conn.close()
             
@@ -1007,7 +1008,6 @@ def auto_task_timer():
                 """, (team, f"Task-{t_num}"))
                 done_members = cursor.fetchone()['count']
                 
-                # 🔴 FIXED: if members are 0, OR all members are reviewed, clear it instantly!
                 if total_members == 0 or done_members >= total_members:
                     cursor.execute("DELETE FROM active_assignments WHERE id = %s", (assign['id'],))
                     continue
