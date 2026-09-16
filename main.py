@@ -121,7 +121,7 @@ def member_main_menu():
 def admin_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(KeyboardButton("Pending Content"), KeyboardButton("Task Assign"))
-    markup.add(KeyboardButton("Task Status"), KeyboardButton("Edit Instructions"))
+    markup.add(KeyboardButton("Reset Task Data"), KeyboardButton("Edit Instructions")) # 🔴 Changed Button here
     markup.add(KeyboardButton("Triggered Task"))
     return markup
 
@@ -388,39 +388,16 @@ def triggered_task_menu(message):
     markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
-@bot.message_handler(func=lambda msg: msg.text == "Task Status")
-def handle_admin_task_status(message):
+# 🔴 NEW FEATURE: Reset Task Data Menu
+@bot.message_handler(func=lambda msg: msg.text == "Reset Task Data")
+def handle_reset_task_data(message):
     if str(message.from_user.id) != ADMIN_CHAT_ID: return
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("SELECT * FROM active_assignments WHERE is_started = TRUE")
-    assigns = cursor.fetchall()
-    if not assigns:
-        bot.send_message(message.chat.id, "No Active Tasks running currently!")
-        conn.close()
-        return
-    text = "📊 Current Task Status:\n\n"
-    for a in assigns:
-        t_num, team = a['task_num'], a['team_name']
-        cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
-        total = cursor.fetchone()['count']
-        
-        # 🔴 FIXED: Counting only those whose task has been "Reviewed" by Admin
-        cursor.execute("""
-            SELECT COUNT(DISTINCT s.telegram_id) 
-            FROM submissions s 
-            JOIN members m ON s.telegram_id = m.telegram_id 
-            WHERE m.team_name = %s 
-              AND s.content_type = %s 
-              AND s.status = 'Reviewed'
-        """, (team, f"Task-{t_num}"))
-        done = cursor.fetchone()['count']
-        text += f"🔹 {team} (Task {t_num}): {done}/{total} Completed\n"
-    bot.send_message(message.chat.id, text)
-    conn.close()
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("Yes", callback_data="reset_task_yes"), InlineKeyboardButton("No", callback_data="acanc"))
+    bot.send_message(message.chat.id, "Are you sure you want to reset all Task Data?", reply_markup=markup)
 
 # 📌 ADMIN: Callbacks
-@bot.callback_query_handler(func=lambda call: call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_") or call.data == "reset_task_yes")
 def admin_callbacks(call):
     adm_id = call.from_user.id
     if str(adm_id) != ADMIN_CHAT_ID: return
@@ -440,6 +417,19 @@ def admin_callbacks(call):
             bot.clear_step_handler_by_chat_id(call.message.chat.id)
             admin_states[adm_id] = {}
             return
+
+        # 🔴 NEW FEATURE: Execution of Reset Task Data
+        elif data == "reset_task_yes":
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM user_task_status")
+            cursor.execute("DELETE FROM active_assignments")
+            cursor.execute("DELETE FROM submissions WHERE content_type LIKE 'Task-%'")
+            cursor.execute("UPDATE task_records SET task_done = 0, task_total = 0")
+            conn.commit()
+            conn.close()
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.send_message(call.message.chat.id, "All Task Data has been permanently reset!✅\nUser profiles are completely fresh.")
 
         elif data.startswith("arev_"):
             target_tg_id = int(data.split("_")[1])
@@ -966,7 +956,7 @@ def step_org_task(message):
     conn.commit()
     conn.close()
 
-# ⏰ Background Auto-Timer (Fixed: Only counts tasks REVIEWED by Admin)
+# ⏰ Background Auto-Timer (Fixed: Won't vanish if team has 0 members)
 def auto_task_timer():
     while True:
         try:
@@ -995,7 +985,7 @@ def auto_task_timer():
                 cursor.execute("SELECT COUNT(*) FROM members WHERE team_name = %s AND status = 'Approved'", (team,))
                 total_members = cursor.fetchone()['count']
                 
-                # 🔴 CRITICAL FIX: Only counting if Admin has 'Reviewed' the submission
+                # 🔴 CRITICAL FIX: Ensures 0 member team won't auto-delete and only counts "Reviewed" submissions
                 cursor.execute("""
                     SELECT COUNT(DISTINCT s.telegram_id) 
                     FROM submissions s 
@@ -1006,7 +996,8 @@ def auto_task_timer():
                 """, (team, f"Task-{t_num}"))
                 done_members = cursor.fetchone()['count']
                 
-                if total_members == 0 or (total_members > 0 and done_members >= total_members):
+                # If there are members and ALL of them are reviewed, remove from Triggered Tasks
+                if total_members > 0 and done_members >= total_members:
                     cursor.execute("DELETE FROM active_assignments WHERE id = %s", (assign['id'],))
                     continue
 
