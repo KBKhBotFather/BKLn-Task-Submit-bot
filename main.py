@@ -153,6 +153,30 @@ def moderator_main_menu():
     markup.add(KeyboardButton("Pending Content"), KeyboardButton("Resignation ⚠️"))
     return markup
 
+# 📌 Moderator Key Login (🟢 FIX APPLIED HERE)
+@bot.message_handler(func=lambda msg: msg.text and msg.text.strip().upper().startswith("BKLNKEY22"))
+def handle_moderator_login(message):
+    tg_id = message.from_user.id
+    code = message.text.strip()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT resign_count FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    
+    expected_suffix = ""
+    if mod and mod['resign_count'] > 0:
+        expected_suffix = str(mod['resign_count'])
+        
+    # Ignore case sensitivity during check
+    if code.upper() == f"BKLNKEY22{expected_suffix}":
+        cursor.execute("INSERT INTO grading_moderators (telegram_id, is_active) VALUES (%s, TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_active = TRUE", (tg_id,))
+        conn.commit()
+        bot.send_message(message.chat.id, "Welcome sir!\nYou are now in a sector of the Admin panel.", reply_markup=moderator_main_menu())
+    else:
+        bot.send_message(message.chat.id, "Invalid Key! Please provide the correct key.")
+    conn.close()
+
 # 📌 Core Commands
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -172,32 +196,9 @@ def send_welcome(message):
 
     user = get_member_info(tg_id)
     if not user:
-        bot.send_message(message.chat.id, "You are not registered yet❌\nPlease register first.", reply_markup=ReplyKeyboardRemove())
+        bot.send_message(message.chat.id, "You are not registered yet❌\nPlease register first.\n(Or provide your security key if you are a moderator)", reply_markup=ReplyKeyboardRemove())
         return
     bot.send_message(message.chat.id, "Welcome to KBKh Bot Ecosystem!\nYou can submit tasks directly here...", reply_markup=member_main_menu())
-
-# 📌 Moderator Key Login
-@bot.message_handler(func=lambda msg: msg.text and msg.text.startswith("BKLnKEY22"))
-def handle_moderator_login(message):
-    tg_id = message.from_user.id
-    code = message.text.strip()
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("SELECT resign_count FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
-    mod = cursor.fetchone()
-    
-    expected_suffix = ""
-    if mod and mod['resign_count'] > 0:
-        expected_suffix = str(mod['resign_count'])
-        
-    if code == f"BKLnKEY22{expected_suffix}":
-        cursor.execute("INSERT INTO grading_moderators (telegram_id, is_active) VALUES (%s, TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_active = TRUE", (tg_id,))
-        conn.commit()
-        bot.send_message(message.chat.id, "Welcome sir!\nYou are now in a sector of the Admin panel.", reply_markup=moderator_main_menu())
-    else:
-        bot.send_message(message.chat.id, "Invalid Key! Please provide the correct key.")
-    conn.close()
 
 # 📌 MODERATOR: Resignation
 @bot.message_handler(func=lambda msg: msg.text == "Resignation ⚠️")
@@ -242,7 +243,13 @@ def resignation_callback(call):
     conn.commit()
     conn.close()
     bot.delete_message(call.message.chat.id, call.message.message_id)
-    bot.send_message(call.message.chat.id, "You have successfully resigned!✅", reply_markup=member_main_menu())
+    
+    # Send user back to basic menu if they are a registered member, else remove keyboard
+    user = get_member_info(tg_id)
+    if user:
+        bot.send_message(call.message.chat.id, "You have successfully resigned!✅", reply_markup=member_main_menu())
+    else:
+        bot.send_message(call.message.chat.id, "You have successfully resigned!✅", reply_markup=ReplyKeyboardRemove())
 
 # 📌 MODERATOR: Pending Content (Grading)
 @bot.message_handler(func=lambda msg: msg.text == "Pending Content")
@@ -272,7 +279,7 @@ def handle_moderator_pending(message):
             return bot.send_message(message.chat.id, "No Pending Content found!")
         markup = InlineKeyboardMarkup(row_width=1)
         for r in records: markup.add(InlineKeyboardButton(f"{r['fb_name']} | Total Count: {r['total']}", callback_data=f"modrev_{r['telegram_id']}"))
-        markup.add(InlineKeyboardButton("Cancel", callback_data="mcanc")) # 🔴 Cancel button added here!
+        markup.add(InlineKeyboardButton("Cancel", callback_data="mcanc"))
         bot.send_message(message.chat.id, "Pending List:", reply_markup=markup)
         
     else:
@@ -293,7 +300,6 @@ def moderator_grading_callbacks(call):
     try: bot.answer_callback_query(call.id)
     except: pass
     
-    # 🔴 Glitch Fix: Check if user is STILL an active mod. If resigned, reject access instantly!
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
@@ -775,7 +781,6 @@ def admin_callbacks(call):
             conn.commit()
             conn.close()
             
-            # 🔴 Admin feedback popup removed completely, only silenty deletes message
             bot.delete_message(call.message.chat.id, call.message.message_id)
             try: 
                 if m_type == 'video': bot.send_video(tg_id, photo_id, caption=f"Instruction:\n{msg_text}")
@@ -1040,7 +1045,6 @@ def admin_callbacks(call):
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
             
     except Exception as e:
-        # 🔴 Ignored 'Message is not modified' error so admin won't see debug spam
         if "message is not modified" not in str(e).lower():
             bot.send_message(ADMIN_CHAT_ID, f"⚠️ System Debug Error: {str(e)}")
 
