@@ -153,7 +153,7 @@ def moderator_main_menu():
     markup.add(KeyboardButton("Pending Content"), KeyboardButton("Resignation ⚠️"))
     return markup
 
-# 📌 Moderator Key Login (🟢 FIX APPLIED HERE)
+# 📌 Moderator Key Login
 @bot.message_handler(func=lambda msg: msg.text and msg.text.strip().upper().startswith("BKLNKEY22"))
 def handle_moderator_login(message):
     tg_id = message.from_user.id
@@ -168,7 +168,6 @@ def handle_moderator_login(message):
     if mod and mod['resign_count'] > 0:
         expected_suffix = str(mod['resign_count'])
         
-    # Ignore case sensitivity during check
     if code.upper() == f"BKLNKEY22{expected_suffix}":
         cursor.execute("INSERT INTO grading_moderators (telegram_id, is_active) VALUES (%s, TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_active = TRUE", (tg_id,))
         conn.commit()
@@ -199,6 +198,24 @@ def send_welcome(message):
         bot.send_message(message.chat.id, "You are not registered yet❌\nPlease register first.\n(Or provide your security key if you are a moderator)", reply_markup=ReplyKeyboardRemove())
         return
     bot.send_message(message.chat.id, "Welcome to KBKh Bot Ecosystem!\nYou can submit tasks directly here...", reply_markup=member_main_menu())
+
+# 🚀 SECRET CHEAT CODE FOR TESTING
+@bot.message_handler(commands=['start_task'])
+def trigger_task_now(message):
+    if str(message.from_user.id) != ADMIN_CHAT_ID: return
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Scheduled time set to 2 minutes ago to trigger it instantly
+        past_time = get_bd_time() - timedelta(minutes=2)
+        cursor.execute("UPDATE active_assignments SET scheduled_for = %s WHERE is_started = FALSE", (past_time,))
+        conn.commit()
+        conn.close()
+        
+        bot.send_message(message.chat.id, "Cheat Code Activated! 🚀\n\nAny pending assigned task will trigger within the next 60 seconds.\n(Message 2 and 3 will naturally follow exactly 24 and 48 hours from NOW).")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Cheat Code Error: {e}")
 
 # 📌 MODERATOR: Resignation
 @bot.message_handler(func=lambda msg: msg.text == "Resignation ⚠️")
@@ -244,7 +261,6 @@ def resignation_callback(call):
     conn.close()
     bot.delete_message(call.message.chat.id, call.message.message_id)
     
-    # Send user back to basic menu if they are a registered member, else remove keyboard
     user = get_member_info(tg_id)
     if user:
         bot.send_message(call.message.chat.id, "You have successfully resigned!✅", reply_markup=member_main_menu())
