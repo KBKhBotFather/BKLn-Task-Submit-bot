@@ -663,6 +663,7 @@ def admin_callbacks(call):
             admin_states[adm_id] = {}
             return
 
+        # 👇 [FIXED AREA: মডারেটরদের বণ্টনের হিসাব জিরো করার কমান্ড যুক্ত করা হয়েছে]
         elif data == "reset_task_yes":
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -670,10 +671,12 @@ def admin_callbacks(call):
             cursor.execute("DELETE FROM active_assignments")
             cursor.execute("DELETE FROM submissions")
             cursor.execute("DELETE FROM task_records")
+            cursor.execute("UPDATE grading_moderators SET total_assigned = 0") # এই লাইনটি যোগ করা হয়েছে
             conn.commit()
             conn.close()
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "All Data (Task, General Post, Special Post) has been permanently reset!✅\nUser profiles are completely fresh (00).")
+        # 👆 [FIXED AREA END]
 
         elif data in ["pend_sp", "pend_task"]:
             conn = get_db_connection()
