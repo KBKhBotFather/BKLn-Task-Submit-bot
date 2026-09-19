@@ -93,7 +93,8 @@ def init_db():
             "ALTER TABLE active_assignments ADD COLUMN scheduled_for TIMESTAMP;",
             "ALTER TABLE active_assignments ADD COLUMN is_started BOOLEAN DEFAULT FALSE;",
             "ALTER TABLE task_records ADD COLUMN special_mark INT DEFAULT 0;",
-            "ALTER TABLE grading_moderators ADD COLUMN total_assigned INT DEFAULT 0;"
+            "ALTER TABLE grading_moderators ADD COLUMN total_assigned INT DEFAULT 0;",
+            "ALTER TABLE grading_moderators ADD COLUMN mod_name TEXT;"
         ]
         for query in upgrade_queries:
             try: cursor.execute(query)
@@ -145,7 +146,7 @@ def admin_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(KeyboardButton("Pending Content"), KeyboardButton("Task Assign"))
     markup.add(KeyboardButton("Reset Task Data"), KeyboardButton("Edit Instructions"))
-    markup.add(KeyboardButton("Triggered Task"))
+    markup.add(KeyboardButton("Triggered Task"), KeyboardButton("Moderators"))
     return markup
 
 def moderator_main_menu():
@@ -169,12 +170,21 @@ def handle_moderator_login(message):
         expected_suffix = str(mod['resign_count'])
         
     if code.upper() == f"BKLNKEY22{expected_suffix}":
-        cursor.execute("INSERT INTO grading_moderators (telegram_id, is_active) VALUES (%s, TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_active = TRUE", (tg_id,))
-        conn.commit()
-        bot.send_message(message.chat.id, "Welcome sir!\nYou are now in a sector of the Admin panel.", reply_markup=moderator_main_menu())
+        msg = bot.send_message(message.chat.id, "Your Full Name?", reply_markup=ReplyKeyboardRemove())
+        bot.register_next_step_handler(msg, process_mod_name)
     else:
         bot.send_message(message.chat.id, "Invalid Key! Please provide the correct key.")
     conn.close()
+
+def process_mod_name(message):
+    tg_id = message.from_user.id
+    mod_name = message.text.strip()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO grading_moderators (telegram_id, is_active, mod_name) VALUES (%s, TRUE, %s) ON CONFLICT (telegram_id) DO UPDATE SET is_active = TRUE, mod_name = %s", (tg_id, mod_name, mod_name))
+    conn.commit()
+    conn.close()
+    bot.send_message(message.chat.id, "Welcome sir!\nYou are now in a sector of the Admin panel.", reply_markup=moderator_main_menu())
 
 # 📌 Core Commands
 @bot.message_handler(commands=['start'])
@@ -351,6 +361,9 @@ def moderator_grading_callbacks(call):
                 sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
                 
                 caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
+                if sub.get('special_category'):
+                    caption_text += f"\nContent: {sub['special_category']}"
+                    
                 markup = get_moderator_grading_keyboard(sub['id'])
                 
                 if sub.get('media_type') == 'video':
@@ -641,8 +654,53 @@ def handle_reset_task_data(message):
     markup.add(InlineKeyboardButton("Yes", callback_data="reset_task_yes"), InlineKeyboardButton("No", callback_data="acanc"))
     bot.send_message(message.chat.id, "Are you sure you want to reset all Task Data?", reply_markup=markup)
 
+@bot.message_handler(func=lambda msg: msg.text == "Moderators")
+def handle_admin_moderators(message):
+    if str(message.from_user.id) != ADMIN_CHAT_ID: return
+    render_admin_moderators(message.chat.id, message.from_user.id)
+
+def render_admin_moderators(chat_id, adm_id, message_id=None):
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT telegram_id, mod_name FROM grading_moderators WHERE is_active = TRUE")
+    mods = cursor.fetchall()
+
+    if not mods:
+        conn.close()
+        text = "No active moderators found."
+        if message_id: bot.edit_message_text(text, chat_id, message_id)
+        else: bot.send_message(chat_id, text)
+        return
+
+    if adm_id not in admin_states: admin_states[adm_id] = {}
+    if 'mod_kick' not in admin_states[adm_id]: admin_states[adm_id]['mod_kick'] = set()
+    kick_set = admin_states[adm_id]['mod_kick']
+
+    markup = InlineKeyboardMarkup(row_width=1)
+    for m in mods:
+        tg_id = m['telegram_id']
+        cursor.execute("SELECT COUNT(*) FROM submissions WHERE assigned_grader = %s AND status = 'Grading'", (tg_id,))
+        count = cursor.fetchone()['count']
+
+        name = m['mod_name']
+        if not name:
+            try: name = bot.get_chat(tg_id).first_name or str(tg_id)
+            except: name = str(tg_id)
+
+        icon = "❌" if tg_id in kick_set else "🔳"
+        btn_text = f"{name} - {count}   {icon}"
+        markup.add(InlineKeyboardButton(btn_text, callback_data=f"akick_sel_{tg_id}"))
+
+    conn.close()
+    markup.row(InlineKeyboardButton("Submit", callback_data="akick_sub"), InlineKeyboardButton("Cancel", callback_data="acanc"))
+
+    text = "Active Moderators:\n(Select to kick and redistribute tasks)"
+    if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+    else: bot.send_message(chat_id, text, reply_markup=markup)
+
+
 # 📌 ADMIN: Callbacks
-@bot.callback_query_handler(func=lambda call: call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_") or call.data == "reset_task_yes" or call.data.startswith("pend_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_") or call.data == "reset_task_yes" or call.data.startswith("pend_") or call.data.startswith("akick_"))
 def admin_callbacks(call):
     adm_id = call.from_user.id
     if str(adm_id) != ADMIN_CHAT_ID: return
@@ -662,6 +720,39 @@ def admin_callbacks(call):
             bot.clear_step_handler_by_chat_id(call.message.chat.id)
             admin_states[adm_id] = {}
             return
+
+        elif data.startswith("akick_sel_"):
+            tgt = int(data.split("_")[2])
+            if 'mod_kick' not in admin_states.get(adm_id, {}): admin_states[adm_id]['mod_kick'] = set()
+            if tgt in admin_states[adm_id]['mod_kick']: admin_states[adm_id]['mod_kick'].remove(tgt)
+            else: admin_states[adm_id]['mod_kick'].add(tgt)
+            render_admin_moderators(call.message.chat.id, adm_id, call.message.message_id)
+
+        elif data == "akick_sub":
+            kick_set = admin_states.get(adm_id, {}).get('mod_kick', set())
+            if not kick_set:
+                return bot.answer_callback_query(call.id, "Select a moderator first!", show_alert=True)
+
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            for tg_id in kick_set:
+                cursor.execute("UPDATE grading_moderators SET is_active = FALSE, resign_count = resign_count + 1 WHERE telegram_id = %s", (tg_id,))
+                cursor.execute("SELECT id FROM submissions WHERE assigned_grader = %s AND status = 'Grading'", (tg_id,))
+                pending_items = cursor.fetchall()
+
+                for item in pending_items:
+                    new_mod = get_least_loaded_moderator()
+                    if new_mod:
+                        cursor.execute("UPDATE submissions SET assigned_grader = %s WHERE id = %s", (new_mod, item['id']))
+                        cursor.execute("UPDATE grading_moderators SET total_assigned = total_assigned + 1 WHERE telegram_id = %s", (new_mod,))
+
+            conn.commit()
+            conn.close()
+            admin_states[adm_id]['mod_kick'] = set()
+
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.send_message(call.message.chat.id, "Selected moderators have been removed and their tasks redistributed!✅")
 
         # 👇 [FIXED AREA: মডারেটরদের বণ্টনের হিসাব জিরো করার কমান্ড যুক্ত করা হয়েছে]
         elif data == "reset_task_yes":
@@ -732,6 +823,8 @@ def admin_callbacks(call):
                 sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
                 
                 caption_text = f"Name: {sub['fb_name']}\nDate: {sub_date}"
+                if sub.get('special_category'):
+                    caption_text += f"\nContent: {sub['special_category']}"
                 if sub['content_type'].startswith('Task-'):
                     caption_text += "\n⭐Special Task"
                     
