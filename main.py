@@ -156,7 +156,7 @@ def moderator_main_menu():
     return markup
 
 # 📌 Moderator Key Login & Team Selection
-@bot.message_handler(func=lambda msg: msg.text and msg.text.strip().upper() == "BKLNKEY22")
+@bot.message_handler(func=lambda msg: msg.text and msg.text.strip().upper() in ["BKLNKEY22", "KBKHKEY22"])
 def handle_moderator_login(message):
     msg = bot.send_message(message.chat.id, "Access Granted✅\nPlease enter your full name:", reply_markup=ReplyKeyboardRemove())
     bot.register_next_step_handler(msg, process_mod_name)
@@ -218,7 +218,7 @@ def trigger_task_now(message):
         bot.send_message(message.chat.id, f"Cheat Code Error: {e}")
 
 # 📌 MODERATOR: Resignation
-@bot.message_handler(func=lambda msg: msg.text == "Resignation ⚠️")
+@bot.message_handler(func=lambda msg: msg.text == "Resignation ⚠️️")
 def handle_resignation(message):
     tg_id = message.from_user.id
     conn = get_db_connection()
@@ -1021,6 +1021,13 @@ def admin_callbacks(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "Task Assign Cancelled Successfully✅")
             
+        # 👇 এখানে ওই End বাটনের (Yes/No অপশন) কোডটি মিসিং ছিল, এখন অ্যাড করা হয়েছে!
+        elif data == "ta_force_end":
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(InlineKeyboardButton("Yes", callback_data="ta_force_end_yes"), InlineKeyboardButton("No", callback_data="acanc"))
+            bot.send_message(call.message.chat.id, "Are you sure you want to end the Task?", reply_markup=markup)
+            
         elif data == "ta_force_end_yes":
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -1168,7 +1175,7 @@ def admin_callbacks(call):
             
     except Exception as e:
         if "message is not modified" not in str(e).lower():
-            bot.send_message(ADMIN_CHAT_ID, f"⚠️ System Debug Error: {str(e)}")
+            bot.send_message(ADMIN_CHAT_ID, f"⚠️️ System Debug Error: {str(e)}")
 
 def get_admin_instruction_keyboard(sub_id, selected=None):
     markup = InlineKeyboardMarkup(row_width=6)
