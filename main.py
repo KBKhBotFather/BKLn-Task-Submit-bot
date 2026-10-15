@@ -75,7 +75,8 @@ def init_db():
             2: "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর মিম পেইজ দিয়েই শুধুমাত্র মিমগ্রুপে পোস্ট করুন।",
             3: "নিজ মডারেটর আইডি থেকে সকল গ্রুপে পোস্ট করুন।",
             4: "নিজ মডারেটর আইডি থেকে শুধুমাত্র মিম গ্রুপে পোস্ট করুন।",
-            5: "নিজ মডারেটর আইডি থেকে Annonymous ভাবে বা সেকেন্ড যেকোনো আইডি থেকে সরাসরি শুধু মিম গ্রুপে পোস্ট করুন।"
+            5: "নিজ মডারেটর আইডি থেকে Annonymous ভাবে বা সেকেন্ড যেকোনো আইডি থেকে সরাসরি শুধু মিম গ্রুপে পোস্ট করুন।",
+            6: "অফিসিয়াল মিম পেইজ এ পোস্ট করুন এবং কিছুটা সময় পর নিজের যেকোনো আইডি থেকে সরাসরি সকল গ্রুপে পোস্ট করুন।"
         }
         for k, v in default_inst.items():
             try: cursor.execute("INSERT INTO custom_instructions (id, instruction_text) VALUES (%s, %s) ON CONFLICT DO NOTHING", (k, v))
@@ -122,7 +123,7 @@ def get_member_info(tg_id):
         return user
     except Exception: return None
 
-# 🔴 Updated Distribution Logic: Strict Round-Robin based on total_assigned
+# 🔴 Round-Robin Distribution Logic
 def get_least_loaded_moderator():
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -150,9 +151,11 @@ def admin_main_menu():
     markup.add(KeyboardButton("Triggered Task"), KeyboardButton("Moderators"))
     return markup
 
+# 🟢 UPDATE 3: Members Status Button Added
 def moderator_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add(KeyboardButton("Pending Content"), KeyboardButton("Resignation ⚠️"))
+    markup.add(KeyboardButton("Pending Content"), KeyboardButton("Members Status"))
+    markup.add(KeyboardButton("Resignation ⚠️"))
     return markup
 
 # 📌 Moderator Key Login & Team Selection
@@ -199,26 +202,23 @@ def send_welcome(message):
         return
     bot.send_message(message.chat.id, "Welcome to KBKh Bot Ecosystem!\nYou can submit tasks directly here...", reply_markup=member_main_menu())
 
-# 🚀 SECRET CHEAT CODE FOR TESTING
+# 🚀 SECRET CHEAT CODE
 @bot.message_handler(commands=['start_task'])
 def trigger_task_now(message):
     if str(message.from_user.id) != ADMIN_CHAT_ID: return
-    
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Scheduled time set to 2 minutes ago to trigger it instantly
         past_time = get_bd_time() - timedelta(minutes=2)
         cursor.execute("UPDATE active_assignments SET scheduled_for = %s WHERE is_started = FALSE", (past_time,))
         conn.commit()
         conn.close()
-        
-        bot.send_message(message.chat.id, "Cheat Code Activated! 🚀\n\nAny pending assigned task will trigger within the next 60 seconds.\n(Message 2 and 3 will naturally follow exactly 24 and 48 hours from NOW).")
+        bot.send_message(message.chat.id, "Cheat Code Activated! 🚀\n\nAny pending assigned task will trigger within the next 60 seconds.")
     except Exception as e:
         bot.send_message(message.chat.id, f"Cheat Code Error: {e}")
 
 # 📌 MODERATOR: Resignation
-@bot.message_handler(func=lambda msg: msg.text == "Resignation ⚠️️")
+@bot.message_handler(func=lambda msg: msg.text == "Resignation ⚠️")
 def handle_resignation(message):
     tg_id = message.from_user.id
     conn = get_db_connection()
@@ -244,10 +244,8 @@ def resignation_callback(call):
         
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    
     cursor.execute("UPDATE grading_moderators SET is_active = FALSE, resign_count = resign_count + 1 WHERE telegram_id = %s", (tg_id,))
     
-    # Re-distribute pending items perfectly using Round-Robin
     cursor.execute("SELECT id FROM submissions WHERE assigned_grader = %s AND status = 'Grading'", (tg_id,))
     pending_items = cursor.fetchall()
     
@@ -267,11 +265,117 @@ def resignation_callback(call):
     else:
         bot.send_message(call.message.chat.id, "You have successfully resigned!✅", reply_markup=ReplyKeyboardRemove())
 
-# 📌 MODERATOR: Pending Content (Grading)
+# 📌 UPDATE 3: MODERATOR - Members Status Flow
+@bot.message_handler(func=lambda msg: msg.text == "Members Status")
+def handle_moderator_members_status(message):
+    tg_id = message.from_user.id
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT team_name, is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    conn.close()
+    
+    if not mod or not mod['is_active']:
+        return bot.send_message(message.chat.id, "You are not an active moderator!")
+        
+    mod_team = mod['team_name']
+    if not mod_team:
+        return bot.send_message(message.chat.id, "Team not assigned!")
+        
+    render_moderator_members_status(message.chat.id, tg_id, mod_team)
+
+def render_moderator_members_status(chat_id, mod_id, mod_team, message_id=None, expanded_tg_id=None):
+    month_name = get_bd_time().strftime("%B")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("""
+        SELECT telegram_id, fb_name 
+        FROM members 
+        WHERE team_name = %s AND status = 'Approved' AND is_blocked = FALSE AND is_removed = FALSE
+        ORDER BY fb_name ASC
+    """, (mod_team,))
+    members = cursor.fetchall()
+    
+    if not members:
+        conn.close()
+        text = f"No members found in {mod_team}!"
+        if message_id: bot.edit_message_text(text, chat_id, message_id)
+        else: bot.send_message(chat_id, text)
+        return
+        
+    header_text = f"🗓️Month: {month_name}\n"
+    
+    if expanded_tg_id:
+        exp_member = next((m for m in members if m['telegram_id'] == expanded_tg_id), None)
+        if exp_member:
+            m_name = exp_member['fb_name']
+            cursor.execute("SELECT * FROM task_records WHERE telegram_id = %s AND month = %s", (expanded_tg_id, month_name))
+            rec = cursor.fetchone()
+            
+            gen = rec['general_post'] if rec else 0
+            spc = rec['special_post'] if rec else 0
+            tdone = rec['task_done'] if rec else 0
+            ttot = rec['task_total'] if rec else 0
+            s_mark = rec['special_mark'] if rec else 0
+            
+            header_text = (f"🗂️{m_name}'s Task status for {month_name} -\n\n"
+                           f"General Post - {gen}\n"
+                           f"Special Post - {spc}\n"
+                           f"Special Task - {tdone}/{ttot}\n"
+                           f"Special Mark - {s_mark}")
+
+    conn.close()
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    for m in members:
+        m_tg = m['telegram_id']
+        if m_tg == expanded_tg_id:
+            markup.add(InlineKeyboardButton(f"{m['fb_name']}🔺", callback_data=f"mod_ms_col_{m_tg}"))
+        else:
+            markup.add(InlineKeyboardButton(f"{m['fb_name']}🔻", callback_data=f"mod_ms_exp_{m_tg}"))
+            
+    markup.add(InlineKeyboardButton("Cancel", callback_data="mod_ms_canc"))
+    
+    if message_id:
+        try: bot.edit_message_text(header_text, chat_id, message_id, reply_markup=markup)
+        except Exception: pass
+    else:
+        bot.send_message(chat_id, header_text, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mod_ms_"))
+def moderator_members_status_callbacks(call):
+    tg_id = call.from_user.id
+    data = call.data
+    try: bot.answer_callback_query(call.id)
+    except: pass
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT team_name, is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    conn.close()
+    
+    if not mod or not mod['is_active']:
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
+        return
+        
+    mod_team = mod['team_name']
+    
+    if data == "mod_ms_canc":
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
+    elif data.startswith("mod_ms_exp_"):
+        exp_id = int(data.split("_")[3])
+        render_moderator_members_status(call.message.chat.id, tg_id, mod_team, call.message.message_id, expanded_tg_id=exp_id)
+    elif data.startswith("mod_ms_col_"):
+        render_moderator_members_status(call.message.chat.id, tg_id, mod_team, call.message.message_id, expanded_tg_id=None)
+
+# 📌 MODERATOR: Pending Content
 @bot.message_handler(func=lambda msg: msg.text == "Pending Content")
 def handle_moderator_pending(message):
     tg_id = message.from_user.id
-    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
@@ -401,8 +505,7 @@ def get_moderator_grading_keyboard(sub_id, selected=None):
     markup.row(InlineKeyboardButton("Submit", callback_data=f"msub_{sub_id}"), InlineKeyboardButton("Cancel", callback_data="mcanc"))
     return markup
 
-
-# 📌 USER: Submissions (Photos & Videos)
+# 📌 USER: Submissions
 @bot.message_handler(content_types=['photo', 'video'])
 def handle_media_submission(message):
     tg_id = message.from_user.id
@@ -688,6 +791,35 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
+# 📌 UPDATE 2: Task Assign Render Helper Page
+def render_ta_assign_page(chat_id, message_id, adm_id):
+    state = admin_states.get(adm_id, {}).get('assigning', {})
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT * FROM organized_tasks ORDER BY id ASC")
+    orgs = cursor.fetchall()
+    conn.close()
+    
+    state['orgs'] = orgs
+    selected_id = state.get('selected')
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    if not orgs:
+        markup.add(InlineKeyboardButton("(No Tasks Organized)", callback_data="ignore"))
+    else:
+        for org in orgs:
+            icon = "✅" if org['id'] == selected_id else "🔳"
+            seq_display = org['sequence'].replace(',', '  ')
+            markup.add(InlineKeyboardButton(f"Task {seq_display}  {icon}", callback_data=f"ta_asgsel_{org['id']}"))
+            
+    markup.row(InlineKeyboardButton("Submit", callback_data="ta_asgsub"), InlineKeyboardButton("Delete", callback_data="ta_asgdel"))
+    markup.row(InlineKeyboardButton("Back", callback_data="ta_list"), InlineKeyboardButton("Cancel", callback_data="acanc"))
+    
+    if message_id:
+        try: bot.edit_message_text("Task Assign Menu:", chat_id, message_id, reply_markup=markup)
+        except Exception: pass
+    else:
+        bot.send_message(chat_id, "Task Assign Menu:", reply_markup=markup)
 
 # 📌 ADMIN: Callbacks
 @bot.callback_query_handler(func=lambda call: call.data.startswith("mteam_") or call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ifbk_") or call.data.startswith("ibck_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_") or call.data == "reset_task_yes" or call.data.startswith("pend_") or call.data.startswith("akick_"))
@@ -697,7 +829,7 @@ def admin_callbacks(call):
     try: bot.answer_callback_query(call.id)
     except: pass
     
-    # MODERATOR REGISTRATION LOGIC
+    # MODERATOR REGISTRATION
     if call.data.startswith("mteam_sel_"):
         team = call.data.split("_")[2]
         moderator_states[adm_id]['reg_team'] = f"Team {team}"
@@ -721,7 +853,6 @@ def admin_callbacks(call):
         moderator_states.pop(adm_id, None)
         return
 
-    # RESTRICT REST TO ADMIN ONLY
     if str(adm_id) != ADMIN_CHAT_ID: return
     data = call.data
 
@@ -856,7 +987,6 @@ def admin_callbacks(call):
             admin_states[adm_id]['rev'][sub_id] = sel
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_admin_instruction_keyboard(sub_id, sel))
 
-        # Admin Feedback Logic Start
         elif data.startswith("ifbk_"):
             sub_id = int(data.split("_")[1])
             sel = admin_states[adm_id].get('rev', {}).get(sub_id)
@@ -946,42 +1076,54 @@ def admin_callbacks(call):
             msg = bot.send_message(call.message.chat.id, "Please provide the list.\n(Example: 1,2,3)", reply_markup=markup)
             bot.register_next_step_handler(msg, step_org_task)
             
+        # 📌 UPDATE 2: Task Assign Screen Flow
         elif data == "ta_assign":
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
             cursor.execute("SELECT COUNT(*) FROM active_assignments")
             if cursor.fetchone()['count'] > 0:
                 conn.close()
                 return bot.answer_callback_query(call.id, "Already assigned a Task! Please stop it first in Triggered Task.", show_alert=True)
-                
-            cursor.execute("SELECT * FROM organized_tasks")
-            orgs = cursor.fetchall()
             conn.close()
             
-            if not orgs: return bot.send_message(call.message.chat.id, "No Tasks organized❌")
-            admin_states[adm_id]['assigning'] = {'orgs': orgs}
-            markup = InlineKeyboardMarkup(row_width=1)
-            for org in orgs: markup.add(InlineKeyboardButton(f"Task {org['sequence'].replace(',', '  ')}   🔳", callback_data=f"ta_asgsel_{org['id']}"))
-            markup.add(InlineKeyboardButton("Back", callback_data="ta_list"), InlineKeyboardButton("Cancel", callback_data="acanc"))
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+            if 'assigning' not in admin_states[adm_id]:
+                admin_states[adm_id]['assigning'] = {}
+            admin_states[adm_id]['assigning']['selected'] = None
+            render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id)
             
         elif data.startswith("ta_asgsel_"):
             org_id = int(data.split("_")[2])
-            admin_states[adm_id]['assigning']['selected'] = org_id
-            markup = InlineKeyboardMarkup(row_width=1)
-            for org in admin_states[adm_id]['assigning']['orgs']:
-                icon = "✅" if org['id'] == org_id else "🔳"
-                markup.add(InlineKeyboardButton(f"Task {org['sequence'].replace(',', '  ')}   {icon}", callback_data=f"ta_asgsel_{org['id']}"))
-            markup.add(InlineKeyboardButton("Submit", callback_data="ta_asgsub"), InlineKeyboardButton("Cancel", callback_data="acanc"))
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+            curr_sel = admin_states[adm_id].get('assigning', {}).get('selected')
+            if curr_sel == org_id:
+                admin_states[adm_id]['assigning']['selected'] = None # Reselect / Deselect
+            else:
+                admin_states[adm_id]['assigning']['selected'] = org_id # Select
+            render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id)
+
+        elif data == "ta_asgdel":
+            state = admin_states[adm_id].get('assigning', {})
+            selected_id = state.get('selected')
+            if not selected_id:
+                return # No action if nothing selected
             
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM organized_tasks WHERE id = %s", (selected_id,))
+            conn.commit()
+            conn.close()
+            
+            admin_states[adm_id]['assigning']['selected'] = None
+            render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id)
+
         elif data == "ta_asgsub":
             state = admin_states[adm_id].get('assigning', {})
             org_id = state.get('selected')
-            if not org_id: return bot.send_message(call.message.chat.id, "Select one first!")
+            if not org_id:
+                return # No action if nothing selected
             
-            seq_str = next((o['sequence'] for o in state['orgs'] if o['id'] == org_id), None)
+            seq_str = next((o['sequence'] for o in state.get('orgs', []) if o['id'] == org_id), None)
+            if not seq_str: return
+            
             tasks = seq_str.split(',')
             teams = ['Team Electron', 'Team Proton', 'Team Neutron']
             month_name = get_bd_time().strftime("%B")
@@ -1003,6 +1145,7 @@ def admin_callbacks(call):
             conn.commit()
             conn.close()
             
+            admin_states[adm_id]['assigning']['selected'] = None
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, f"Task: {seq_str.replace(',',' ')} Assigned Successfully✅\nWill trigger at Midnight.")
             
@@ -1021,7 +1164,6 @@ def admin_callbacks(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.send_message(call.message.chat.id, "Task Assign Cancelled Successfully✅")
             
-        # 👇 এখানে ওই End বাটনের (Yes/No অপশন) কোডটি মিসিং ছিল, এখন অ্যাড করা হয়েছে!
         elif data == "ta_force_end":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             markup = InlineKeyboardMarkup(row_width=2)
@@ -1175,11 +1317,12 @@ def admin_callbacks(call):
             
     except Exception as e:
         if "message is not modified" not in str(e).lower():
-            bot.send_message(ADMIN_CHAT_ID, f"⚠️️ System Debug Error: {str(e)}")
+            bot.send_message(ADMIN_CHAT_ID, f"⚠️ System Debug Error: {str(e)}")
 
+# 📌 UPDATE 1: Admin Instruction Keyboard & Marks Update Logic
 def get_admin_instruction_keyboard(sub_id, selected=None):
-    markup = InlineKeyboardMarkup(row_width=6)
-    labels = ['1', '2', '3', '4', '5', '❌']
+    markup = InlineKeyboardMarkup(row_width=7)
+    labels = ['1', '2', '3', '4', '5', '6', '❌']
     btns = [InlineKeyboardButton(f"{l}✅" if str(l) == str(selected) else l, callback_data=f"isel_{sub_id}_{l}") for l in labels]
     markup.add(*btns)
     markup.row(InlineKeyboardButton("Submit", callback_data=f"isub_{sub_id}"), InlineKeyboardButton("Feedback", callback_data=f"ifbk_{sub_id}"), InlineKeyboardButton("Cancel", callback_data="acanc"))
@@ -1215,13 +1358,27 @@ def execute_grading_action(adm_id, chat_id, sub_id, sel, extra_feedback=None):
         assigned_grader = None
     else:
         cursor.execute("SELECT instruction_text FROM custom_instructions WHERE id = %s", (int(sel),))
-        msg_text = cursor.fetchone()['instruction_text']
+        row_inst = cursor.fetchone()
+        msg_text = row_inst['instruction_text'] if row_inst else "Instruction"
         
         cursor.execute("INSERT INTO task_records (telegram_id, month, general_post, special_post, task_done, task_total) VALUES (%s, %s, 0, 0, 0, 0) ON CONFLICT (telegram_id, month) DO NOTHING;", (tg_id, month_name))
-        if c_type == 'Special Post': cursor.execute("UPDATE task_records SET special_post = special_post + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
-        elif c_type.startswith('Task'): cursor.execute("UPDATE task_records SET task_done = task_done + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
         
-        if str(sel) == '1' and (c_type == 'Special Post' or c_type.startswith('Task')):
+        if c_type == 'Special Post': 
+            cursor.execute("UPDATE task_records SET special_post = special_post + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
+        elif c_type.startswith('Task'): 
+            cursor.execute("UPDATE task_records SET task_done = task_done + 1 WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
+        
+        # 🟢 Special Mark Fixed Points Calculation
+        mark_to_add = 0
+        if sel == '1': mark_to_add = 3
+        elif sel == '2': mark_to_add = 2
+        elif sel in ['3', '4', '5']: mark_to_add = 1
+        elif sel == '6': mark_to_add = 5
+        
+        if mark_to_add > 0:
+            cursor.execute("UPDATE task_records SET special_mark = special_mark + %s WHERE telegram_id = %s AND month = %s", (mark_to_add, tg_id, month_name))
+
+        if str(sel) in ['1', '6'] and (c_type == 'Special Post' or c_type.startswith('Task')):
             try:
                 braft_cap = sub_info.get('caption')
                 braft_cap = braft_cap if (braft_cap and braft_cap.strip()) else None
@@ -1516,7 +1673,7 @@ if __name__ == "__main__":
     t_timer.daemon = True
     t_timer.start()
     
-    print("🤖 BKLn Task Submit Bot is fully operational with Round-Robin grading!")
+    print("🤖 BKLn Task Submit Bot is running with all updated features!")
     while True:
         try:
             bot.remove_webhook()
