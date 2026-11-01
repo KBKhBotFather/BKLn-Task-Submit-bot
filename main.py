@@ -544,12 +544,14 @@ def handle_media_submission(message):
     if tg_id not in user_photo_states: user_photo_states[tg_id] = {}
     user_photo_states[tg_id][msg_id] = {'file_id': file_id, 'media_type': media_type, 'caption': caption}
     
-    markup = InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=1)
     if active_task and not task_completed:
         user_photo_states[tg_id][msg_id]['active_task_num'] = active_task['task_num']
-        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
     else:
-        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
     
     markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
     
@@ -574,16 +576,21 @@ def handle_user_submission_clicks(call):
         
     elif action == "tgen":
         state['selected_type'] = 'General Post'
-        markup = InlineKeyboardMarkup(row_width=2)
-        if 'active_task_num' in state: markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"), InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
-        else: markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"), InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+        markup = InlineKeyboardMarkup(row_width=1)
+        if 'active_task_num' in state: 
+            markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"))
+            markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
+        else: 
+            markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"))
+            markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif action == "tspt":
         state['selected_type'] = 'Task'
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task✅", callback_data="ignore"))
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("Special Task✅", callback_data="ignore"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -796,7 +803,8 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
-# 📌 UPDATE 2: Task Assign Render Helper Page
+
+# 📌 UPDATE 2: Task Assign Render Helper Page (Fixed Layout)
 def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     state = admin_states.get(adm_id, {}).get('assigning', {})
     conn = get_db_connection()
@@ -829,10 +837,10 @@ def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
                 markup.row(*row)
                 
                 if org_id in notes:
-                    markup.add(InlineKeyboardButton(f"{notes[org_id]}", callback_data="ignore"))
-                    markup.add(InlineKeyboardButton("Edit", callback_data=f"ta_note_edit_{org_id}"))
-                else:
-                    markup.add(InlineKeyboardButton("Add Message", callback_data=f"ta_note_add_{org_id}"))
+                    # Showing note as a message text is better for multi-line support.
+                    pass # Handled in bot.send_message text part
+                markup.add(InlineKeyboardButton("Add/Edit Message", callback_data=f"ta_note_add_{org_id}"))
+                
             else:
                 row = []
                 row.append(InlineKeyboardButton("🔺", callback_data=f"ta_asgexp_{org_id}"))
@@ -842,11 +850,15 @@ def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     markup.row(InlineKeyboardButton("Submit", callback_data="ta_asgsub"), InlineKeyboardButton("Delete", callback_data="ta_asgdel"))
     markup.row(InlineKeyboardButton("Back", callback_data="ta_list"), InlineKeyboardButton("Cancel", callback_data="acanc"))
     
+    msg_text = "Task Assign Menu:\n"
+    if expanded_org_id and expanded_org_id in notes:
+         msg_text += f"\nNote for this task:\n{notes[expanded_org_id]}"
+
     if message_id:
-        try: bot.edit_message_text("Task Assign Menu:", chat_id, message_id, reply_markup=markup)
+        try: bot.edit_message_text(msg_text, chat_id, message_id, reply_markup=markup)
         except Exception: pass
     else:
-        bot.send_message(chat_id, "Task Assign Menu:", reply_markup=markup)
+        bot.send_message(chat_id, msg_text, reply_markup=markup)
 
 # 📌 ADMIN: Callbacks
 @bot.callback_query_handler(func=lambda call: call.data.startswith("mteam_") or call.data.startswith("acanc") or call.data.startswith("arev_") or call.data.startswith("isel_") or call.data.startswith("isub_") or call.data.startswith("ifbk_") or call.data.startswith("ibck_") or call.data.startswith("ta_") or call.data.startswith("ei_") or call.data.startswith("ti_") or call.data.startswith("mi_") or call.data == "reset_task_yes" or call.data.startswith("pend_") or call.data.startswith("akick_"))
@@ -886,6 +898,7 @@ def admin_callbacks(call):
     if adm_id not in admin_states: admin_states[adm_id] = {}
 
     try:
+        # UPDATE 3: Fixed Cancel Glitch (Clearing step handlers on cancel)
         if data == "acanc":
             if 'clean_msgs' in admin_states.get(adm_id, {}):
                 for m_id in admin_states[adm_id]['clean_msgs']:
