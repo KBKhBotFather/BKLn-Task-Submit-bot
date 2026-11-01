@@ -68,6 +68,9 @@ def init_db():
             CREATE TABLE IF NOT EXISTS grading_moderators (
                 telegram_id BIGINT PRIMARY KEY, resign_count INT DEFAULT 0, is_active BOOLEAN DEFAULT TRUE, total_assigned INT DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS task_notes (
+                task_num INT PRIMARY KEY, note_text TEXT
+            );
         """)
         
         default_inst = {
@@ -139,7 +142,7 @@ def get_least_loaded_moderator():
 
 # 📱 Keyboards
 def member_main_menu():
-    markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True, is_persistent=True)
     markup.add(KeyboardButton("Task"), KeyboardButton("Pending Content"))
     markup.add(KeyboardButton("My Task Status"))
     return markup
@@ -545,9 +548,9 @@ def handle_media_submission(message):
     markup = InlineKeyboardMarkup(row_width=2)
     if active_task and not task_completed:
         user_photo_states[tg_id][msg_id]['active_task_num'] = active_task['task_num']
-        markup.add(InlineKeyboardButton("General Post", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
     else:
-        markup.add(InlineKeyboardButton("General Post", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Post", callback_data=f"tspf_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
     
     markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
     
@@ -574,14 +577,14 @@ def handle_user_submission_clicks(call):
         state['selected_type'] = 'General Post'
         markup = InlineKeyboardMarkup(row_width=2)
         if 'active_task_num' in state: markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"), InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
-        else: markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"), InlineKeyboardButton("Special Post", callback_data=f"tspf_{msg_id}"))
+        else: markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"), InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif action == "tspt":
         state['selected_type'] = 'Task'
         markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(InlineKeyboardButton("General Post", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task✅", callback_data="ignore"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"), InlineKeyboardButton("Special Task✅", callback_data="ignore"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -792,12 +795,17 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
 # 📌 UPDATE 2: Task Assign Render Helper Page
-def render_ta_assign_page(chat_id, message_id, adm_id):
+def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     state = admin_states.get(adm_id, {}).get('assigning', {})
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT * FROM organized_tasks ORDER BY id ASC")
     orgs = cursor.fetchall()
+    
+    # Fetch notes
+    cursor.execute("SELECT * FROM task_notes")
+    notes_raw = cursor.fetchall()
+    notes = {row['task_num']: row['note_text'] for row in notes_raw}
     conn.close()
     
     state['orgs'] = orgs
@@ -808,10 +816,26 @@ def render_ta_assign_page(chat_id, message_id, adm_id):
         markup.add(InlineKeyboardButton("(No Tasks Organized)", callback_data="ignore"))
     else:
         for org in orgs:
-            icon = "✅" if org['id'] == selected_id else "🔳"
+            org_id = org['id']
+            icon = "✅" if org_id == selected_id else "🔳"
             seq_display = org['sequence'].replace(',', '  ')
-            markup.add(InlineKeyboardButton(f"Task {seq_display}  {icon}", callback_data=f"ta_asgsel_{org['id']}"))
             
+            if org_id == expanded_org_id:
+                markup.add(InlineKeyboardButton(f"Task {seq_display}", callback_data="ignore"))
+                markup.add(InlineKeyboardButton("Add Message", callback_data=f"ta_note_add_{org_id}"))
+                markup.add(InlineKeyboardButton(f"🔻", callback_data=f"ta_asgcol_{org_id}"))
+            else:
+                row = []
+                row.append(InlineKeyboardButton(f"🔺", callback_data=f"ta_asgexp_{org_id}"))
+                row.append(InlineKeyboardButton(f"Task {seq_display}", callback_data="ignore"))
+                row.append(InlineKeyboardButton(icon, callback_data=f"ta_asgsel_{org_id}"))
+                markup.row(*row)
+                
+                # Check if this task has a note
+                if org_id in notes:
+                    markup.add(InlineKeyboardButton(f"{notes[org_id]}", callback_data="ignore"))
+                    markup.add(InlineKeyboardButton("Edit", callback_data=f"ta_note_edit_{org_id}"))
+
     markup.row(InlineKeyboardButton("Submit", callback_data="ta_asgsub"), InlineKeyboardButton("Delete", callback_data="ta_asgdel"))
     markup.row(InlineKeyboardButton("Back", callback_data="ta_list"), InlineKeyboardButton("Cancel", callback_data="acanc"))
     
@@ -1091,6 +1115,30 @@ def admin_callbacks(call):
             admin_states[adm_id]['assigning']['selected'] = None
             render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id)
             
+        elif data.startswith("ta_asgexp_"):
+            org_id = int(data.split("_")[2])
+            render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id, expanded_org_id=org_id)
+
+        elif data.startswith("ta_asgcol_"):
+            render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id, expanded_org_id=None)
+            
+        elif data.startswith("ta_note_add_") or data.startswith("ta_note_edit_"):
+            org_id = int(data.split("_")[3]) if "edit" in data else int(data.split("_")[3])
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            
+            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="ta_assign_back"))
+            msg_text = "Please Enter new message:" if "edit" in data else "Please enter the message:"
+            msg = bot.send_message(call.message.chat.id, msg_text, reply_markup=markup)
+            
+            admin_states[adm_id]['wait_ta_note'] = {'org_id': org_id, 'msg_id': msg.message_id}
+            bot.register_next_step_handler(msg, step_add_ta_note)
+
+        elif data == "ta_assign_back":
+            bot.clear_step_handler_by_chat_id(call.message.chat.id)
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            msg = bot.send_message(call.message.chat.id, "Loading...")
+            render_ta_assign_page(call.message.chat.id, msg.message_id, adm_id)
+
         elif data.startswith("ta_asgsel_"):
             org_id = int(data.split("_")[2])
             curr_sel = admin_states[adm_id].get('assigning', {}).get('selected')
@@ -1109,6 +1157,7 @@ def admin_callbacks(call):
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM organized_tasks WHERE id = %s", (selected_id,))
+            cursor.execute("DELETE FROM task_notes WHERE task_num = %s", (selected_id,))
             conn.commit()
             conn.close()
             
@@ -1575,6 +1624,28 @@ def step_org_task(message):
         bot.send_message(message.chat.id, msg)
     conn.commit()
     conn.close()
+
+def step_add_ta_note(message):
+    adm_id = message.from_user.id
+    state = admin_states.get(adm_id, {}).get('wait_ta_note')
+    if not state: return
+    
+    org_id = state['org_id']
+    msg_id = state['msg_id']
+    note_text = message.text.strip()
+    
+    try: bot.delete_message(message.chat.id, msg_id)
+    except: pass
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO task_notes (task_num, note_text) VALUES (%s, %s) ON CONFLICT (task_num) DO UPDATE SET note_text = EXCLUDED.note_text", (org_id, note_text))
+    conn.commit()
+    conn.close()
+    
+    admin_states[adm_id].pop('wait_ta_note', None)
+    msg = bot.send_message(message.chat.id, "Loading...")
+    render_ta_assign_page(message.chat.id, msg.message_id, adm_id, expanded_org_id=org_id)
 
 # ⏰ Background Auto-Timer
 def auto_task_timer():
