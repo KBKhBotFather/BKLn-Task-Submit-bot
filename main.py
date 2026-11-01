@@ -558,7 +558,7 @@ def handle_media_submission(message):
     if media_type == 'photo': bot.send_photo(message.chat.id, file_id, reply_markup=markup)
     else: bot.send_video(message.chat.id, file_id, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("tgen_") or call.data.startswith("tspt_") or call.data.startswith("tspf_") or call.data.startswith("spc_") or call.data.startswith("subf_") or call.data.startswith("ucanc_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("tgen_") or call.data.startswith("tspt_") or call.data.startswith("tspf_") or call.data.startswith("spc_") or call.data.startswith("subf_") or call.data.startswith("ucanc_") or call.data.startswith("ubck_"))
 def handle_user_submission_clicks(call):
     tg_id = call.from_user.id
     parts = call.data.split("_")
@@ -574,6 +574,19 @@ def handle_user_submission_clicks(call):
         user_photo_states[tg_id].pop(msg_id, None)
         bot.delete_message(call.message.chat.id, call.message.message_id)
         
+    elif action == "ubck":
+        state.pop('selected_type', None)
+        state.pop('special_cat', None)
+        markup = InlineKeyboardMarkup(row_width=1)
+        if 'active_task_num' in state: 
+            markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+            markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
+        else: 
+            markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+            markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+        markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+
     elif action == "tgen":
         state['selected_type'] = 'General Post'
         markup = InlineKeyboardMarkup(row_width=1)
@@ -600,7 +613,8 @@ def handle_user_submission_clicks(call):
         markup.add(InlineKeyboardButton("Eng to Ban", callback_data=f"spc_{msg_id}_eng"))
         markup.add(InlineKeyboardButton("OC", callback_data=f"spc_{msg_id}_oc"))
         markup.add(InlineKeyboardButton("Inspired OC", callback_data=f"spc_{msg_id}_insp"))
-        markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
+        markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Back", callback_data=f"ubck_{msg_id}"))
+        markup.add(InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
         
     elif action == "spc":
@@ -609,7 +623,8 @@ def handle_user_submission_clicks(call):
         markup = InlineKeyboardMarkup(row_width=1)
         for k, v in cat_map.items():
             markup.add(InlineKeyboardButton(f"{v}✅" if k == parts[2] else v, callback_data=f"spc_{msg_id}_{k}"))
-        markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
+        markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Back", callback_data=f"ubck_{msg_id}"))
+        markup.add(InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif action == "subf":
@@ -837,7 +852,6 @@ def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
                 markup.row(*row)
                 
                 if org_id in notes:
-                    # Showing note as a message text is better for multi-line support.
                     pass # Handled in bot.send_message text part
                 markup.add(InlineKeyboardButton("Add/Edit Message", callback_data=f"ta_note_add_{org_id}"))
                 
@@ -852,7 +866,7 @@ def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     
     msg_text = "Task Assign Menu:\n"
     if expanded_org_id and expanded_org_id in notes:
-         msg_text += f"\nNote for this task:\n{notes[expanded_org_id]}"
+         msg_text += f"\n{notes[expanded_org_id]}"
 
     if message_id:
         try: bot.edit_message_text(msg_text, chat_id, message_id, reply_markup=markup)
