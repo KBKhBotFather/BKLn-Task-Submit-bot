@@ -154,7 +154,6 @@ def admin_main_menu():
     markup.add(KeyboardButton("Triggered Task"), KeyboardButton("Moderators"))
     return markup
 
-# 🟢 UPDATE 3: Members Status Button Added
 def moderator_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(KeyboardButton("Pending Content"), KeyboardButton("Members Status"))
@@ -794,7 +793,8 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
-# 📌 UPDATE 2: Task Assign Render Helper Page
+
+# 📌 UPDATE 2: Task Assign Render Helper Page (Fixed Layout)
 def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     state = admin_states.get(adm_id, {}).get('assigning', {})
     conn = get_db_connection()
@@ -818,24 +818,25 @@ def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
         for org in orgs:
             org_id = org['id']
             icon = "✅" if org_id == selected_id else "🔳"
-            seq_display = org['sequence'].replace(',', '  ')
+            seq_display = org['sequence'].replace(',', ' ')
             
             if org_id == expanded_org_id:
-                markup.add(InlineKeyboardButton(f"Task {seq_display}", callback_data="ignore"))
-                markup.add(InlineKeyboardButton("Add Message", callback_data=f"ta_note_add_{org_id}"))
-                markup.add(InlineKeyboardButton(f"🔻", callback_data=f"ta_asgcol_{org_id}"))
-            else:
                 row = []
-                row.append(InlineKeyboardButton(f"🔺", callback_data=f"ta_asgexp_{org_id}"))
-                row.append(InlineKeyboardButton(f"Task {seq_display}", callback_data="ignore"))
-                row.append(InlineKeyboardButton(icon, callback_data=f"ta_asgsel_{org_id}"))
+                row.append(InlineKeyboardButton("🔻", callback_data=f"ta_asgcol_{org_id}"))
+                row.append(InlineKeyboardButton(f"Task {seq_display} {icon}", callback_data=f"ta_asgsel_{org_id}"))
                 markup.row(*row)
                 
-                # Check if this task has a note
                 if org_id in notes:
                     markup.add(InlineKeyboardButton(f"{notes[org_id]}", callback_data="ignore"))
                     markup.add(InlineKeyboardButton("Edit", callback_data=f"ta_note_edit_{org_id}"))
-
+                else:
+                    markup.add(InlineKeyboardButton("Add Message", callback_data=f"ta_note_add_{org_id}"))
+            else:
+                row = []
+                row.append(InlineKeyboardButton("🔺", callback_data=f"ta_asgexp_{org_id}"))
+                row.append(InlineKeyboardButton(f"Task {seq_display} {icon}", callback_data=f"ta_asgsel_{org_id}"))
+                markup.row(*row)
+                
     markup.row(InlineKeyboardButton("Submit", callback_data="ta_asgsub"), InlineKeyboardButton("Delete", callback_data="ta_asgdel"))
     markup.row(InlineKeyboardButton("Back", callback_data="ta_list"), InlineKeyboardButton("Cancel", callback_data="acanc"))
     
@@ -883,13 +884,14 @@ def admin_callbacks(call):
     if adm_id not in admin_states: admin_states[adm_id] = {}
 
     try:
+        # UPDATE 3: Fixed Cancel Glitch (Clearing step handlers on cancel)
         if data == "acanc":
             if 'clean_msgs' in admin_states.get(adm_id, {}):
                 for m_id in admin_states[adm_id]['clean_msgs']:
                     try: bot.delete_message(call.message.chat.id, m_id)
                     except: pass
-            bot.delete_message(call.message.chat.id, call.message.message_id)
             bot.clear_step_handler_by_chat_id(call.message.chat.id)
+            bot.delete_message(call.message.chat.id, call.message.message_id)
             admin_states[adm_id] = {}
             return
 
@@ -1100,7 +1102,6 @@ def admin_callbacks(call):
             msg = bot.send_message(call.message.chat.id, "Please provide the list.\n(Example: 1,2,3)", reply_markup=markup)
             bot.register_next_step_handler(msg, step_org_task)
             
-        # 📌 UPDATE 2: Task Assign Screen Flow
         elif data == "ta_assign":
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -1143,16 +1144,18 @@ def admin_callbacks(call):
             org_id = int(data.split("_")[2])
             curr_sel = admin_states[adm_id].get('assigning', {}).get('selected')
             if curr_sel == org_id:
-                admin_states[adm_id]['assigning']['selected'] = None # Reselect / Deselect
+                admin_states[adm_id]['assigning']['selected'] = None
             else:
-                admin_states[adm_id]['assigning']['selected'] = org_id # Select
-            render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id)
+                admin_states[adm_id]['assigning']['selected'] = org_id
+            
+            expanded = org_id if org_id == curr_sel else None
+            render_ta_assign_page(call.message.chat.id, call.message.message_id, adm_id, expanded_org_id=expanded)
 
         elif data == "ta_asgdel":
             state = admin_states[adm_id].get('assigning', {})
             selected_id = state.get('selected')
             if not selected_id:
-                return # No action if nothing selected
+                return
             
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -1168,7 +1171,7 @@ def admin_callbacks(call):
             state = admin_states[adm_id].get('assigning', {})
             org_id = state.get('selected')
             if not org_id:
-                return # No action if nothing selected
+                return
             
             seq_str = next((o['sequence'] for o in state.get('orgs', []) if o['id'] == org_id), None)
             if not seq_str: return
@@ -1704,7 +1707,7 @@ def auto_task_timer():
                     LEFT JOIN user_task_status uts ON m.telegram_id = uts.telegram_id AND uts.task_num = %s
                     WHERE m.team_name = %s AND m.status = 'Approved' AND (uts.completed IS NULL OR uts.completed = FALSE)
                 """, (t_num, team))
-                pending_users = cursor.fetchall()
+                pending_users =fetchall()
 
                 if diff_hours >= 24 and msg_lvl == 1 and t_msgs['msg_2']:
                     for u in pending_users:
