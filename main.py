@@ -589,16 +589,19 @@ def handle_user_submission_clicks(call):
 
     elif action == "tspf":
         state['selected_type'] = 'Special Post'
-        markup = InlineKeyboardMarkup(row_width=3)
-        markup.add(InlineKeyboardButton("Eng to Ban", callback_data=f"spc_{msg_id}_eng"), InlineKeyboardButton("OC", callback_data=f"spc_{msg_id}_oc"), InlineKeyboardButton("Inspired OC", callback_data=f"spc_{msg_id}_insp"))
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("Eng to Ban", callback_data=f"spc_{msg_id}_eng"))
+        markup.add(InlineKeyboardButton("OC", callback_data=f"spc_{msg_id}_oc"))
+        markup.add(InlineKeyboardButton("Inspired OC", callback_data=f"spc_{msg_id}_insp"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
         
     elif action == "spc":
         cat_map = {"eng": "Eng to Ban", "oc": "OC", "insp": "Inspired OC"}
         state['special_cat'] = cat_map[parts[2]]
-        markup = InlineKeyboardMarkup(row_width=3)
-        markup.add(*[InlineKeyboardButton(f"{v}✅" if k == parts[2] else v, callback_data=f"spc_{msg_id}_{k}") for k, v in cat_map.items()])
+        markup = InlineKeyboardMarkup(row_width=1)
+        for k, v in cat_map.items():
+            markup.add(InlineKeyboardButton(f"{v}✅" if k == parts[2] else v, callback_data=f"spc_{msg_id}_{k}"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -793,8 +796,7 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
-
-# 📌 UPDATE 2: Task Assign Render Helper Page (Fixed Layout)
+# 📌 UPDATE 2: Task Assign Render Helper Page
 def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     state = admin_states.get(adm_id, {}).get('assigning', {})
     conn = get_db_connection()
@@ -884,7 +886,6 @@ def admin_callbacks(call):
     if adm_id not in admin_states: admin_states[adm_id] = {}
 
     try:
-        # UPDATE 3: Fixed Cancel Glitch (Clearing step handlers on cancel)
         if data == "acanc":
             if 'clean_msgs' in admin_states.get(adm_id, {}):
                 for m_id in admin_states[adm_id]['clean_msgs']:
@@ -1707,7 +1708,7 @@ def auto_task_timer():
                     LEFT JOIN user_task_status uts ON m.telegram_id = uts.telegram_id AND uts.task_num = %s
                     WHERE m.team_name = %s AND m.status = 'Approved' AND (uts.completed IS NULL OR uts.completed = FALSE)
                 """, (t_num, team))
-                pending_users =fetchall()
+                pending_users = cursor.fetchall()
 
                 if diff_hours >= 24 and msg_lvl == 1 and t_msgs['msg_2']:
                     for u in pending_users:
