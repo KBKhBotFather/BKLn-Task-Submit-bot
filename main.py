@@ -126,15 +126,19 @@ def get_member_info(tg_id):
         return user
     except Exception: return None
 
-# 🔴 Round-Robin Distribution Logic
+# 🔴 Round-Robin Distribution Logic (Real-time Pending Count Fix)
 def get_least_loaded_moderator():
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
     cursor.execute("""
-        SELECT telegram_id 
-        FROM grading_moderators 
-        WHERE is_active = TRUE 
-        ORDER BY total_assigned ASC, telegram_id ASC LIMIT 1
+        SELECT gm.telegram_id, COUNT(s.id) as pending_count
+        FROM grading_moderators gm
+        LEFT JOIN submissions s ON gm.telegram_id = s.assigned_grader AND s.status = 'Grading'
+        WHERE gm.is_active = TRUE
+        GROUP BY gm.telegram_id
+        ORDER BY pending_count ASC, gm.telegram_id ASC
+        LIMIT 1
     """)
     mod = cursor.fetchone()
     conn.close()
@@ -244,7 +248,8 @@ def resignation_callback(call):
     except: pass
     
     if call.data == "res_no":
-        bot.delete_message(call.message.chat.id, call.message.message_id)
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
         return
         
     conn = get_db_connection()
@@ -258,11 +263,11 @@ def resignation_callback(call):
         new_mod = get_least_loaded_moderator()
         if new_mod:
             cursor.execute("UPDATE submissions SET assigned_grader = %s WHERE id = %s", (new_mod, item['id']))
-            cursor.execute("UPDATE grading_moderators SET total_assigned = total_assigned + 1 WHERE telegram_id = %s", (new_mod,))
             
     conn.commit()
     conn.close()
-    bot.delete_message(call.message.chat.id, call.message.message_id)
+    try: bot.delete_message(call.message.chat.id, call.message.message_id)
+    except: pass
     
     user = get_member_info(tg_id)
     if user:
@@ -439,7 +444,8 @@ def moderator_grading_callbacks(call):
 
     try:
         if data == "mcanc":
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             return
 
         elif data.startswith("modrev_"):
@@ -450,7 +456,9 @@ def moderator_grading_callbacks(call):
             subs = cursor.fetchall()
             conn.close()
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
+            
             if not subs: return bot.send_message(call.message.chat.id, "No pending content.")
             
             for sub in subs:
@@ -496,11 +504,11 @@ def moderator_grading_callbacks(call):
                 conn.commit()
                 
             conn.close()
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             
     except Exception as e:
-        if "message is not modified" not in str(e).lower():
-            bot.send_message(ADMIN_CHAT_ID, f"⚠️ Mod System Error: {str(e)}")
+        pass # Ignore deletion errors completely to avoid logging/sending messages
 
 def get_moderator_grading_keyboard(sub_id, selected=None):
     markup = InlineKeyboardMarkup(row_width=6)
@@ -525,7 +533,7 @@ def handle_media_submission(message):
         
     caption = message.caption if message.caption else ""
     
-    # 🟢 Single Connection Database Fix for Maximum Speed! 🚀
+    # 🟢 Single Connection Database Fix for Speed! 🚀
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     
@@ -585,7 +593,8 @@ def handle_user_submission_clicks(call):
 
     if action == "ucanc":
         user_photo_states[tg_id].pop(msg_id, None)
-        bot.delete_message(call.message.chat.id, call.message.message_id)
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
         
     elif action == "ubck":
         state.pop('selected_type', None)
@@ -666,7 +675,8 @@ def handle_user_submission_clicks(call):
             
         conn.commit()
         conn.close()
-        bot.delete_message(call.message.chat.id, call.message.message_id)
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
         bot.send_message(call.message.chat.id, msg)
         user_photo_states[tg_id].pop(msg_id, None)
 
@@ -807,7 +817,16 @@ def handle_admin_moderators(message):
 def render_admin_moderators(chat_id, adm_id, message_id=None):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("SELECT telegram_id, mod_name FROM grading_moderators WHERE is_active = TRUE")
+    
+    # Updated Query to show real-time pending submissions per moderator
+    cursor.execute("""
+        SELECT gm.telegram_id, gm.mod_name, COUNT(s.id) as pending_count
+        FROM grading_moderators gm
+        LEFT JOIN submissions s ON gm.telegram_id = s.assigned_grader AND s.status = 'Grading'
+        WHERE gm.is_active = TRUE
+        GROUP BY gm.telegram_id, gm.mod_name
+        ORDER BY gm.telegram_id ASC
+    """)
     mods = cursor.fetchall()
 
     if not mods:
@@ -824,8 +843,7 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     markup = InlineKeyboardMarkup(row_width=1)
     for m in mods:
         tg_id = m['telegram_id']
-        cursor.execute("SELECT COUNT(*) FROM submissions WHERE assigned_grader = %s AND status = 'Grading'", (tg_id,))
-        count = cursor.fetchone()['count']
+        count = m['pending_count']
 
         name = m['mod_name']
         if not name:
@@ -924,7 +942,8 @@ def admin_callbacks(call):
         conn.commit()
         conn.close()
         
-        bot.delete_message(call.message.chat.id, call.message.message_id)
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
         bot.send_message(call.message.chat.id, "Welcome sir!\nYou are now in a sector of the Admin panel.", reply_markup=moderator_main_menu())
         moderator_states.pop(adm_id, None)
         return
@@ -942,7 +961,8 @@ def admin_callbacks(call):
                     try: bot.delete_message(call.message.chat.id, m_id)
                     except: pass
             bot.clear_step_handler_by_chat_id(call.message.chat.id)
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             admin_states[adm_id] = {}
             return
 
@@ -970,13 +990,13 @@ def admin_callbacks(call):
                     new_mod = get_least_loaded_moderator()
                     if new_mod:
                         cursor.execute("UPDATE submissions SET assigned_grader = %s WHERE id = %s", (new_mod, item['id']))
-                        cursor.execute("UPDATE grading_moderators SET total_assigned = total_assigned + 1 WHERE telegram_id = %s", (new_mod,))
 
             conn.commit()
             conn.close()
             admin_states[adm_id]['mod_kick'] = set()
 
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             bot.send_message(call.message.chat.id, "Selected moderators have been removed and their tasks redistributed!✅")
 
         elif data == "reset_task_yes":
@@ -989,7 +1009,8 @@ def admin_callbacks(call):
             cursor.execute("UPDATE grading_moderators SET total_assigned = 0")
             conn.commit()
             conn.close()
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             bot.send_message(call.message.chat.id, "All Data (Task, General Post, Special Post) has been permanently reset!✅\nUser profiles are completely fresh (00).")
 
         elif data in ["pend_sp", "pend_task"]:
@@ -1039,7 +1060,9 @@ def admin_callbacks(call):
             subs = cursor.fetchall()
             conn.close()
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
+            
             if not subs: return bot.send_message(call.message.chat.id, "No pending content.")
             for sub in subs:
                 dt = sub.get('created_at')
@@ -1071,7 +1094,9 @@ def admin_callbacks(call):
             sel = admin_states[adm_id].get('rev', {}).get(sub_id)
             if not sel: return bot.answer_callback_query(call.id, "Select instruction first!", show_alert=True)
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
+            
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(InlineKeyboardButton("Back", callback_data=f"ibck_{sub_id}"), InlineKeyboardButton("Cancel", callback_data="acanc"))
             msg = bot.send_message(call.message.chat.id, "Enter any additional feedback you would like to provide for this meme:", reply_markup=markup)
@@ -1089,7 +1114,9 @@ def admin_callbacks(call):
             sub = cursor.fetchone()
             conn.close()
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
+            
             if sub:
                 dt = sub.get('created_at')
                 sub_date = (dt + timedelta(hours=6)).strftime("%d %B") if dt else get_bd_time().strftime("%d %B")
@@ -1107,7 +1134,8 @@ def admin_callbacks(call):
             sub_id = int(data.split("_")[1])
             sel = admin_states[adm_id].get('rev', {}).get(sub_id)
             if not sel: return bot.send_message(call.message.chat.id, "Select instruction first!")
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             execute_grading_action(adm_id, call.message.chat.id, sub_id, sel, None)
 
         elif data == "ta_add":
@@ -1122,7 +1150,8 @@ def admin_callbacks(call):
             admin_states[adm_id]['t_num'] = next_t
             admin_states[adm_id]['clean_msgs'] = []
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="acanc"))
             msg = bot.send_message(call.message.chat.id, f"Give the first message of the Task -{next_t}:", reply_markup=markup)
             admin_states[adm_id]['clean_msgs'].append(msg.message_id)
@@ -1151,7 +1180,8 @@ def admin_callbacks(call):
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
             
         elif data == "ta_org":
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="acanc"))
             msg = bot.send_message(call.message.chat.id, "Please provide the list.\n(Example: 1,2,3)", reply_markup=markup)
             bot.register_next_step_handler(msg, step_org_task)
@@ -1179,7 +1209,8 @@ def admin_callbacks(call):
             
         elif data.startswith("ta_note_add_") or data.startswith("ta_note_edit_"):
             org_id = int(data.split("_")[3]) if "edit" in data else int(data.split("_")[3])
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="ta_assign_back"))
             msg_text = "Please Enter new message:" if "edit" in data else "Please enter the message:"
@@ -1190,7 +1221,8 @@ def admin_callbacks(call):
 
         elif data == "ta_assign_back":
             bot.clear_step_handler_by_chat_id(call.message.chat.id)
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             msg = bot.send_message(call.message.chat.id, "Loading...")
             render_ta_assign_page(call.message.chat.id, msg.message_id, adm_id)
 
@@ -1252,7 +1284,8 @@ def admin_callbacks(call):
             conn.close()
             
             admin_states[adm_id]['assigning']['selected'] = None
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             bot.send_message(call.message.chat.id, f"Task: {seq_str.replace(',',' ')} Assigned Successfully✅\nWill trigger at Midnight.")
             
         elif data == "ta_back_main":
@@ -1267,11 +1300,13 @@ def admin_callbacks(call):
             cursor.execute("DELETE FROM active_assignments WHERE is_started = FALSE")
             conn.commit()
             conn.close()
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             bot.send_message(call.message.chat.id, "Task Assign Cancelled Successfully✅")
             
         elif data == "ta_force_end":
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(InlineKeyboardButton("Yes", callback_data="ta_force_end_yes"), InlineKeyboardButton("No", callback_data="acanc"))
             bot.send_message(call.message.chat.id, "Are you sure you want to end the Task?", reply_markup=markup)
@@ -1297,7 +1332,8 @@ def admin_callbacks(call):
             cursor.execute("DELETE FROM active_assignments WHERE is_started = TRUE")
             conn.commit()
             conn.close()
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             bot.send_message(call.message.chat.id, "Task Successfully end!✅")
 
         elif data == "ei_task":
@@ -1319,7 +1355,8 @@ def admin_callbacks(call):
             msg_text = cursor.fetchone()[f'msg_{msg_idx}']
             conn.close()
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(InlineKeyboardButton("Yes", callback_data=f"ti_yes_{t_num}_{msg_idx}"), InlineKeyboardButton("No", callback_data="acanc"))
             bot.send_message(call.message.chat.id, f"{msg_text}\n\nWould you like to change anything here?", reply_markup=markup)
@@ -1327,7 +1364,8 @@ def admin_callbacks(call):
         elif data.startswith("ti_yes_"):
             parts = data.split("_")
             t_num, msg_idx = int(parts[2]), int(parts[3])
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             msg = bot.send_message(call.message.chat.id, f"Input the new message for Task -{t_num} ;Message -{msg_idx}:", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="acanc")))
             admin_states[adm_id]['wait_ti'] = {'t_num': t_num, 'msg_idx': msg_idx}
             bot.register_next_step_handler(msg, step_update_task_msg)
@@ -1378,14 +1416,16 @@ def admin_callbacks(call):
             inst = cursor.fetchone()
             conn.close()
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(InlineKeyboardButton("Yes", callback_data=f"mi_yes_{i_id}"), InlineKeyboardButton("No", callback_data="acanc"))
             bot.send_message(call.message.chat.id, f"{inst['instruction_text']}\n\nWould you like to change anything here?", reply_markup=markup)
             
         elif data.startswith("mi_yes_"):
             sel_id = int(data.split("_")[2])
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             msg = bot.send_message(call.message.chat.id, f"Input the new message for Instruction {sel_id}:", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="acanc")))
             admin_states[adm_id]['wait_mi'] = sel_id
             bot.register_next_step_handler(msg, step_update_main_msg)
@@ -1397,7 +1437,8 @@ def admin_callbacks(call):
             max_id = cursor.fetchone()[0] or 0
             conn.close()
             
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Cancel", callback_data="acanc"))
             msg = bot.send_message(call.message.chat.id, f"Please provide the instruction number {max_id + 1}:", reply_markup=markup)
             admin_states[adm_id]['wait_mi'] = max_id + 1
@@ -1422,8 +1463,7 @@ def admin_callbacks(call):
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
             
     except Exception as e:
-        if "message is not modified" not in str(e).lower():
-            bot.send_message(ADMIN_CHAT_ID, f"⚠️ System Debug Error: {str(e)}")
+        pass
 
 # 📌 UPDATE 1: Admin Instruction Keyboard & Marks Update Logic
 def get_admin_instruction_keyboard(sub_id, selected=None):
@@ -1493,9 +1533,8 @@ def execute_grading_action(adm_id, chat_id, sub_id, sel, extra_feedback=None):
                 else: bot.send_photo(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
             except Exception as e: print(f"Group send error: {e}")
         
+        # Changed to strictly avoid total_assigned relying for new assignments
         assigned_grader = get_least_loaded_moderator()
-        if assigned_grader:
-            cursor.execute("UPDATE grading_moderators SET total_assigned = total_assigned + 1 WHERE telegram_id = %s", (assigned_grader,))
         status_val = 'Grading' if assigned_grader else 'Reviewed'
         
     cursor.execute("UPDATE submissions SET status = %s, assigned_instruction = %s, assigned_grader = %s WHERE id = %s", (status_val, msg_text, assigned_grader, sub_id))
