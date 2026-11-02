@@ -190,15 +190,18 @@ def send_welcome(message):
         return
     
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
     mod = cursor.fetchone()
-    conn.close()
-    if mod and mod[0]:
+    if mod and mod['is_active']:
+        conn.close()
         bot.send_message(message.chat.id, "Welcome back to Moderator Panel!", reply_markup=moderator_main_menu())
         return
 
-    user = get_member_info(tg_id)
+    cursor.execute("SELECT fb_name, team_name FROM members WHERE telegram_id = %s AND team_name IN ('Team Electron', 'Team Proton', 'Team Neutron') AND is_blocked = FALSE AND is_removed = FALSE AND status = 'Approved'", (tg_id,))
+    user = cursor.fetchone()
+    conn.close()
+    
     if not user:
         bot.send_message(message.chat.id, "You are not registered yet❌\nPlease register first.\n(Or provide your security key if you are a moderator)", reply_markup=ReplyKeyboardRemove())
         return
@@ -378,21 +381,20 @@ def moderator_members_status_callbacks(call):
 @bot.message_handler(func=lambda msg: msg.text == "Pending Content")
 def handle_moderator_pending(message):
     tg_id = message.from_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
-    mod = cursor.fetchone()
-    conn.close()
     
     if str(tg_id) == ADMIN_CHAT_ID:
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(InlineKeyboardButton("Special Post", callback_data="pend_sp"), InlineKeyboardButton("Special Task", callback_data="pend_task"))
         markup.add(InlineKeyboardButton("Cancel", callback_data="acanc"))
         bot.send_message(message.chat.id, "Select Content Type to Review:", reply_markup=markup)
+        return
         
-    elif mod and mod[0]:
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    
+    if mod and mod['is_active']:
         cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.assigned_grader = %s AND s.status = 'Grading' GROUP BY s.telegram_id, m.fb_name", (tg_id,))
         records = cursor.fetchall()
         conn.close()
@@ -405,8 +407,6 @@ def handle_moderator_pending(message):
         bot.send_message(message.chat.id, "Pending List:", reply_markup=markup)
         
     else:
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("SELECT photo_id, media_type FROM submissions WHERE telegram_id = %s AND status = 'Pending'", (tg_id,))
         subs = cursor.fetchall()
         conn.close()
@@ -510,38 +510,37 @@ def get_moderator_grading_keyboard(sub_id, selected=None):
     markup.row(InlineKeyboardButton("Submit", callback_data=f"msub_{sub_id}"), InlineKeyboardButton("Cancel", callback_data="mcanc"))
     return markup
 
-# 📌 USER: Submissions - UPDATED to handle documents (files) as well
+# 📌 USER: Submissions
 @bot.message_handler(content_types=['photo', 'video', 'document'])
 def handle_media_submission(message):
     tg_id = message.from_user.id
     msg_id = message.message_id
     if str(tg_id) == ADMIN_CHAT_ID: return 
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
-    mod = cursor.fetchone()
-    conn.close()
-    if mod and mod[0]: return 
-    
-    user = get_member_info(tg_id)
-    if not user: return
-    
     media_type = message.content_type
-    
-    if media_type == 'photo':
-        file_id = message.photo[-1].file_id
-    elif media_type == 'video':
-        file_id = message.video.file_id
-    elif media_type == 'document':
-        file_id = message.document.file_id
-    else:
-        return
+    if media_type == 'photo': file_id = message.photo[-1].file_id
+    elif media_type == 'video': file_id = message.video.file_id
+    elif media_type == 'document': file_id = message.document.file_id
+    else: return
         
     caption = message.caption if message.caption else ""
     
+    # 🟢 Single Connection Database Fix for Maximum Speed! 🚀
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cursor.execute("SELECT is_active FROM grading_moderators WHERE telegram_id = %s", (tg_id,))
+    mod = cursor.fetchone()
+    if mod and mod['is_active']: 
+        conn.close()
+        return 
+    
+    cursor.execute("SELECT fb_name, team_name FROM members WHERE telegram_id = %s AND team_name IN ('Team Electron', 'Team Proton', 'Team Neutron') AND is_blocked = FALSE AND is_removed = FALSE AND status = 'Approved'", (tg_id,))
+    user = cursor.fetchone()
+    if not user: 
+        conn.close()
+        return
+    
     cursor.execute("SELECT task_num FROM active_assignments WHERE team_name = %s AND is_started = TRUE", (user['team_name'],))
     active_task = cursor.fetchone()
     
@@ -551,6 +550,7 @@ def handle_media_submission(message):
         uts = cursor.fetchone()
         if uts and uts['completed']:
             task_completed = True
+            
     conn.close()
 
     if tg_id not in user_photo_states: user_photo_states[tg_id] = {}
@@ -559,11 +559,11 @@ def handle_media_submission(message):
     markup = InlineKeyboardMarkup(row_width=1)
     if active_task and not task_completed:
         user_photo_states[tg_id][msg_id]['active_task_num'] = active_task['task_num']
-        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
         markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
     else:
-        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
-        markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
     
     markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
     
@@ -592,11 +592,11 @@ def handle_user_submission_clicks(call):
         state.pop('special_cat', None)
         markup = InlineKeyboardMarkup(row_width=1)
         if 'active_task_num' in state: 
-            markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+            markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
             markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
         else: 
-            markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
-            markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+            markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+            markup.add(InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -608,14 +608,14 @@ def handle_user_submission_clicks(call):
             markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
         else: 
             markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"))
-            markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+            markup.add(InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif action == "tspt":
         state['selected_type'] = 'Task'
         markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
         markup.add(InlineKeyboardButton("Special Task✅", callback_data="ignore"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -673,10 +673,16 @@ def handle_user_submission_clicks(call):
 @bot.message_handler(func=lambda msg: msg.text == "Task")
 def handle_task_display(message):
     tg_id = message.from_user.id
-    user = get_member_info(tg_id)
-    if not user: return
+    
+    # 🟢 Single Connection Database Fix for Speed! 🚀
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cursor.execute("SELECT fb_name, team_name FROM members WHERE telegram_id = %s AND team_name IN ('Team Electron', 'Team Proton', 'Team Neutron') AND is_blocked = FALSE AND is_removed = FALSE AND status = 'Approved'", (tg_id,))
+    user = cursor.fetchone()
+    if not user: 
+        conn.close()
+        return
     
     cursor.execute("SELECT task_num, current_msg FROM active_assignments WHERE team_name = %s AND is_started = TRUE", (user['team_name'],))
     assign = cursor.fetchone()
@@ -718,12 +724,18 @@ def handle_task_display(message):
 def handle_my_task_status(message):
     tg_id = message.from_user.id
     if str(tg_id) == ADMIN_CHAT_ID: return
-    user = get_member_info(tg_id)
-    if not user: return
     
-    month_name = get_bd_time().strftime("%B")
+    # 🟢 Single Connection Database Fix for Speed! 🚀
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cursor.execute("SELECT fb_name, team_name FROM members WHERE telegram_id = %s AND team_name IN ('Team Electron', 'Team Proton', 'Team Neutron') AND is_blocked = FALSE AND is_removed = FALSE AND status = 'Approved'", (tg_id,))
+    user = cursor.fetchone()
+    if not user: 
+        conn.close()
+        return
+    
+    month_name = get_bd_time().strftime("%B")
     cursor.execute("SELECT * FROM task_records WHERE telegram_id = %s AND month = %s", (tg_id, month_name))
     rec = cursor.fetchone()
     conn.close()
@@ -831,6 +843,8 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
+
+# 📌 UPDATE 2: Task Assign Render Helper Page (Fixed Layout)
 def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     state = admin_states.get(adm_id, {}).get('assigning', {})
     conn = get_db_connection()
@@ -921,6 +935,7 @@ def admin_callbacks(call):
     if adm_id not in admin_states: admin_states[adm_id] = {}
 
     try:
+        # UPDATE 3: Fixed Cancel Glitch (Clearing step handlers on cancel)
         if data == "acanc":
             if 'clean_msgs' in admin_states.get(adm_id, {}):
                 for m_id in admin_states[adm_id]['clean_msgs']:
@@ -1037,8 +1052,6 @@ def admin_callbacks(call):
                     caption_text += "\n⭐Special Task"
                     
                 markup = get_admin_instruction_keyboard(sub['id'])
-                
-                # UPDATE 4: View files properly in review mode as well
                 if sub.get('media_type') == 'video':
                     bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
                 elif sub.get('media_type') == 'document':
@@ -1086,13 +1099,9 @@ def admin_callbacks(call):
                 
                 sel = admin_states[adm_id].get('rev', {}).get(sub_id)
                 markup = get_admin_instruction_keyboard(sub_id, sel)
-                
-                if sub.get('media_type') == 'video':
-                    bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
-                elif sub.get('media_type') == 'document':
-                    bot.send_document(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
-                else:
-                    bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                if sub.get('media_type') == 'video': bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                elif sub.get('media_type') == 'document': bot.send_document(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                else: bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
 
         elif data.startswith("isub_"):
             sub_id = int(data.split("_")[1])
