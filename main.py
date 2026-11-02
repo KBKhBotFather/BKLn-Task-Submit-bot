@@ -267,7 +267,7 @@ def resignation_callback(call):
     else:
         bot.send_message(call.message.chat.id, "You have successfully resigned!✅", reply_markup=ReplyKeyboardRemove())
 
-# 📌 UPDATE 3: MODERATOR - Members Status Flow
+# 📌 MODERATOR: Members Status Flow
 @bot.message_handler(func=lambda msg: msg.text == "Members Status")
 def handle_moderator_members_status(message):
     tg_id = message.from_user.id
@@ -413,6 +413,7 @@ def handle_moderator_pending(message):
         if not subs: bot.send_message(message.chat.id, "No Pending content available!")
         for sub in subs:
             if sub['media_type'] == 'video': bot.send_video(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
+            elif sub['media_type'] == 'document': bot.send_document(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
             else: bot.send_photo(message.chat.id, sub['photo_id'], caption="Instruction: Pending⏳")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("modrev_") or call.data.startswith("msel_") or call.data.startswith("msub_") or call.data == "mcanc")
@@ -464,6 +465,8 @@ def moderator_grading_callbacks(call):
                 
                 if sub.get('media_type') == 'video':
                     bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                elif sub.get('media_type') == 'document':
+                    bot.send_document(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
                 else:
                     bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
 
@@ -507,8 +510,8 @@ def get_moderator_grading_keyboard(sub_id, selected=None):
     markup.row(InlineKeyboardButton("Submit", callback_data=f"msub_{sub_id}"), InlineKeyboardButton("Cancel", callback_data="mcanc"))
     return markup
 
-# 📌 USER: Submissions
-@bot.message_handler(content_types=['photo', 'video'])
+# 📌 USER: Submissions - UPDATED to handle documents (files) as well
+@bot.message_handler(content_types=['photo', 'video', 'document'])
 def handle_media_submission(message):
     tg_id = message.from_user.id
     msg_id = message.message_id
@@ -525,7 +528,16 @@ def handle_media_submission(message):
     if not user: return
     
     media_type = message.content_type
-    file_id = message.photo[-1].file_id if media_type == 'photo' else message.video.file_id
+    
+    if media_type == 'photo':
+        file_id = message.photo[-1].file_id
+    elif media_type == 'video':
+        file_id = message.video.file_id
+    elif media_type == 'document':
+        file_id = message.document.file_id
+    else:
+        return
+        
     caption = message.caption if message.caption else ""
     
     conn = get_db_connection()
@@ -556,7 +568,8 @@ def handle_media_submission(message):
     markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
     
     if media_type == 'photo': bot.send_photo(message.chat.id, file_id, reply_markup=markup)
-    else: bot.send_video(message.chat.id, file_id, reply_markup=markup)
+    elif media_type == 'video': bot.send_video(message.chat.id, file_id, reply_markup=markup)
+    elif media_type == 'document': bot.send_document(message.chat.id, file_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("tgen_") or call.data.startswith("tspt_") or call.data.startswith("tspf_") or call.data.startswith("spc_") or call.data.startswith("subf_") or call.data.startswith("ucanc_") or call.data.startswith("ubck_"))
 def handle_user_submission_clicks(call):
@@ -818,8 +831,6 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
-
-# 📌 UPDATE 2: Task Assign Render Helper Page (Fixed Layout)
 def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     state = admin_states.get(adm_id, {}).get('assigning', {})
     conn = get_db_connection()
@@ -851,8 +862,6 @@ def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
                 row.append(InlineKeyboardButton(f"Task {seq_display} {icon}", callback_data=f"ta_asgsel_{org_id}"))
                 markup.row(*row)
                 
-                if org_id in notes:
-                    pass # Handled in bot.send_message text part
                 markup.add(InlineKeyboardButton("Add/Edit Message", callback_data=f"ta_note_add_{org_id}"))
                 
             else:
@@ -912,7 +921,6 @@ def admin_callbacks(call):
     if adm_id not in admin_states: admin_states[adm_id] = {}
 
     try:
-        # UPDATE 3: Fixed Cancel Glitch (Clearing step handlers on cancel)
         if data == "acanc":
             if 'clean_msgs' in admin_states.get(adm_id, {}):
                 for m_id in admin_states[adm_id]['clean_msgs']:
@@ -1029,8 +1037,12 @@ def admin_callbacks(call):
                     caption_text += "\n⭐Special Task"
                     
                 markup = get_admin_instruction_keyboard(sub['id'])
+                
+                # UPDATE 4: View files properly in review mode as well
                 if sub.get('media_type') == 'video':
                     bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                elif sub.get('media_type') == 'document':
+                    bot.send_document(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
                 else:
                     bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
 
@@ -1074,8 +1086,13 @@ def admin_callbacks(call):
                 
                 sel = admin_states[adm_id].get('rev', {}).get(sub_id)
                 markup = get_admin_instruction_keyboard(sub_id, sel)
-                if sub.get('media_type') == 'video': bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
-                else: bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                
+                if sub.get('media_type') == 'video':
+                    bot.send_video(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                elif sub.get('media_type') == 'document':
+                    bot.send_document(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
+                else:
+                    bot.send_photo(call.message.chat.id, sub['photo_id'], caption=caption_text, reply_markup=markup)
 
         elif data.startswith("isub_"):
             sub_id = int(data.split("_")[1])
@@ -1463,6 +1480,7 @@ def execute_grading_action(adm_id, chat_id, sub_id, sel, extra_feedback=None):
                 braft_cap = sub_info.get('caption')
                 braft_cap = braft_cap if (braft_cap and braft_cap.strip()) else None
                 if m_type == 'video': bot.send_video(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
+                elif m_type == 'document': bot.send_document(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
                 else: bot.send_photo(BRAFT_GROUP_ID, photo_id, caption=braft_cap)
             except Exception as e: print(f"Group send error: {e}")
         
@@ -1480,6 +1498,7 @@ def execute_grading_action(adm_id, chat_id, sub_id, sel, extra_feedback=None):
     
     try: 
         if m_type == 'video': bot.send_video(tg_id, photo_id, caption=final_caption)
+        elif m_type == 'document': bot.send_document(tg_id, photo_id, caption=final_caption)
         else: bot.send_photo(tg_id, photo_id, caption=final_caption)
     except: pass
 
