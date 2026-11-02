@@ -818,7 +818,7 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     
-    # Updated Query to show real-time pending submissions per moderator
+    # 🟢 Updated Query to show real-time pending submissions per moderator
     cursor.execute("""
         SELECT gm.telegram_id, gm.mod_name, COUNT(s.id) as pending_count
         FROM grading_moderators gm
