@@ -156,7 +156,6 @@ def admin_main_menu():
     markup.add(KeyboardButton("Pending Content"), KeyboardButton("Task Assign"))
     markup.add(KeyboardButton("Reset Task Data"), KeyboardButton("Edit Instructions"))
     markup.add(KeyboardButton("Triggered Task"), KeyboardButton("Moderators"))
-    markup.add(KeyboardButton("Revert Tasks")) # 🟢 New Revert Button added here
     return markup
 
 def moderator_main_menu():
@@ -401,7 +400,7 @@ def handle_moderator_pending(message):
     mod = cursor.fetchone()
     
     if mod and mod['is_active']:
-        cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.assigned_grader = %s AND s.status = 'Grading' GROUP BY s.telegram_id, m.fb_name", (tg_id,))
+        cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.assigned_grader = %s AND s.status = 'Grading' AND m.status = 'Approved' AND m.is_blocked = FALSE AND m.is_removed = FALSE GROUP BY s.telegram_id, m.fb_name", (tg_id,))
         records = cursor.fetchall()
         conn.close()
         
@@ -567,11 +566,11 @@ def handle_media_submission(message):
     markup = InlineKeyboardMarkup(row_width=1)
     if active_task and not task_completed:
         user_photo_states[tg_id][msg_id]['active_task_num'] = active_task['task_num']
-        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
         markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
     else:
-        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
-        markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
     
     markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
     
@@ -601,11 +600,11 @@ def handle_user_submission_clicks(call):
         state.pop('special_cat', None)
         markup = InlineKeyboardMarkup(row_width=1)
         if 'active_task_num' in state: 
-            markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+            markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
             markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
         else: 
-            markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
-            markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+            markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+            markup.add(InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -617,14 +616,14 @@ def handle_user_submission_clicks(call):
             markup.add(InlineKeyboardButton("Special Task", callback_data=f"tspt_{msg_id}"))
         else: 
             markup.add(InlineKeyboardButton("General Post✅", callback_data="ignore"))
-            markup.add(InlineKeyboardButton("Special Post (নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
+            markup.add(InlineKeyboardButton("Special Post\n(নিজের তৈরি)", callback_data=f"tspf_{msg_id}"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif action == "tspt":
         state['selected_type'] = 'Task'
         markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton("General Post (রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
+        markup.add(InlineKeyboardButton("General Post\n(রিপোস্ট)", callback_data=f"tgen_{msg_id}"))
         markup.add(InlineKeyboardButton("Special Task✅", callback_data="ignore"))
         markup.row(InlineKeyboardButton("Submit", callback_data=f"subf_{msg_id}"), InlineKeyboardButton("Cancel", callback_data=f"ucanc_{msg_id}"))
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -806,26 +805,6 @@ def handle_reset_task_data(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("Yes", callback_data="reset_task_yes"), InlineKeyboardButton("No", callback_data="acanc"))
     bot.send_message(message.chat.id, "Are you sure you want to reset all Task Data?", reply_markup=markup)
-    
-# 🟢 🟢 🟢 NEW: Admin Command to Revert Orphaned Tasks
-@bot.message_handler(func=lambda msg: msg.text == "Revert Tasks")
-def handle_revert_orphan_tasks(message):
-    if str(message.from_user.id) != ADMIN_CHAT_ID: return
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("UPDATE submissions SET assigned_grader = NULL, status = 'Pending' WHERE status = 'Grading' AND assigned_grader IS NOT NULL")
-        row_count = cursor.rowcount
-        conn.commit()
-        conn.close()
-        
-        if row_count > 0:
-            bot.send_message(message.chat.id, f"Successfully reverted {row_count} pending task(s) back to the Admin Panel!✅\nThey are now unassigned and waiting in your Pending Content.")
-        else:
-            bot.send_message(message.chat.id, "No orphaned or stuck tasks found. Everything is clear!✅")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"Error reverting tasks: {e}")
 
 @bot.message_handler(func=lambda msg: msg.text == "Moderators")
 def handle_admin_moderators(message):
@@ -879,7 +858,7 @@ def render_admin_moderators(chat_id, adm_id, message_id=None):
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
 
-# 📌 Task Assign Render Helper Page (Fixed Layout)
+# 📌 Task Assign Render Helper Page
 def render_ta_assign_page(chat_id, message_id, adm_id, expanded_org_id=None):
     state = admin_states.get(adm_id, {}).get('assigning', {})
     conn = get_db_connection()
@@ -971,7 +950,6 @@ def admin_callbacks(call):
     if adm_id not in admin_states: admin_states[adm_id] = {}
 
     try:
-        # Fixed Cancel Glitch (Clearing step handlers on cancel)
         if data == "acanc":
             if 'clean_msgs' in admin_states.get(adm_id, {}):
                 for m_id in admin_states[adm_id]['clean_msgs']:
@@ -1036,10 +1014,10 @@ def admin_callbacks(call):
             
             if data == "pend_sp":
                 c_label = "sp"
-                cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.status = 'Pending' AND s.content_type = 'Special Post' GROUP BY s.telegram_id, m.fb_name")
+                cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.status = 'Pending' AND s.content_type = 'Special Post' AND m.status = 'Approved' AND m.is_blocked = FALSE AND m.is_removed = FALSE GROUP BY s.telegram_id, m.fb_name")
             else:
                 c_label = "tk"
-                cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.status = 'Pending' AND s.content_type LIKE 'Task-%%' GROUP BY s.telegram_id, m.fb_name")
+                cursor.execute("SELECT s.telegram_id, m.fb_name, COUNT(s.id) as total FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.status = 'Pending' AND s.content_type LIKE 'Task-%%' AND m.status = 'Approved' AND m.is_blocked = FALSE AND m.is_removed = FALSE GROUP BY s.telegram_id, m.fb_name")
                 
             records = cursor.fetchall()
             conn.close()
@@ -1068,11 +1046,11 @@ def admin_callbacks(call):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             if c_label == "sp":
-                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending' AND s.content_type = 'Special Post'", (target_tg_id,))
+                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending' AND s.content_type = 'Special Post' AND m.status = 'Approved' AND m.is_blocked = FALSE AND m.is_removed = FALSE", (target_tg_id,))
             elif c_label == "tk":
-                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending' AND s.content_type LIKE 'Task-%%'", (target_tg_id,))
+                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending' AND s.content_type LIKE 'Task-%%' AND m.status = 'Approved' AND m.is_blocked = FALSE AND m.is_removed = FALSE", (target_tg_id,))
             else:
-                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending'", (target_tg_id,))
+                cursor.execute("SELECT s.*, m.fb_name FROM submissions s JOIN members m ON s.telegram_id = m.telegram_id WHERE s.telegram_id = %s AND s.status = 'Pending' AND m.status = 'Approved' AND m.is_blocked = FALSE AND m.is_removed = FALSE", (target_tg_id,))
                 
             subs = cursor.fetchall()
             conn.close()
@@ -1768,6 +1746,12 @@ def auto_task_timer():
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # 🟢 Background Orphan Data Cleanup 
+            cursor.execute("DELETE FROM submissions WHERE telegram_id NOT IN (SELECT telegram_id FROM members WHERE status = 'Approved' AND is_blocked = FALSE AND is_removed = FALSE)")
+            cursor.execute("DELETE FROM user_task_status WHERE telegram_id NOT IN (SELECT telegram_id FROM members WHERE status = 'Approved' AND is_blocked = FALSE AND is_removed = FALSE)")
+            conn.commit()
+
             cursor.execute("SELECT * FROM active_assignments")
             assignments = cursor.fetchall()
             now = get_bd_time()
